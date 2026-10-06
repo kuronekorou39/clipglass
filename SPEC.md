@@ -105,7 +105,7 @@
 | RTF | `Rich Text Format` |
 | 画像 | `PNG`、`CF_DIB`、`CF_DIBV5`、`CF_BITMAP` |
 | ファイル | `CF_HDROP` |
-| その他 | 上記以外の形式がある場合 |
+| その他 N | 上記以外の形式がある場合。Nはその件数 |
 
 - HTMLまたはRTFがある項目には「書式付き」と表示する。
 - 先頭行では、クリップボードが報告した形式名をすべて一覧で確認できる(例: `XML Spreadsheet`、`Biff12`)。
@@ -151,7 +151,7 @@
 
 | 担当 | 構成 |
 | --- | --- |
-| 不透明度 | `WS_EX_LAYERED` と `SetLayeredWindowAttributes`。local-port-board の `set_window_opacity` を移植する |
+| 不透明度 | `WS_EX_LAYERED` と `SetLayeredWindowAttributes`。Tauriは表示や最前面の切り替えのたびに拡張スタイルを作り直すので、その都度掛け直す |
 | 最前面・移動 | Tauriの `setAlwaysOnTop` と `data-tauri-drag-region` |
 | 変更検出 | `AddClipboardFormatListener` と `WM_CLIPBOARDUPDATE`。ポーリングはしない |
 | 読み取り・書き戻し | Rust側でWindowsのクリップボードAPIを使う |
@@ -162,7 +162,7 @@
 
 ### 9.1 更新処理
 
-1. 変更通知を受け取り、UIを止めない経路で読み取る。他のプロセスがクリップボードを使用中の場合は、短い待機を入れて上限付きで再試行する。
+1. 変更通知を受け取り、50 ms待ってからUIを止めない経路で読み取る。通知の直後に開くと、コピー元がデータを置き終える処理と競合して、コピー元側のエラーになることがある。他のプロセスがクリップボードを使用中の場合は、短い待機を入れて上限付きで再試行する。
 2. 形式名を列挙し、§4.1 に従ってテキストまたは画像を読み取る。
 3. 読み取り前後で `GetClipboardSequenceNumber` を比べ、変わっていれば取り直す。古い読み取り結果で新しい表示を上書きしない。
 4. 内容のハッシュを計算し、§4.2 に従って履歴を更新してUIへ通知する。

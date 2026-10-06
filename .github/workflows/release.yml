@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # タグと各ファイルのバージョンが食い違ったままリリースしない
+      - name: Check version matches tag
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          npm_version="$(node -p "require('./package.json').version")"
+          cargo_version="$(cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | node -p "JSON.parse(require('fs').readFileSync(0)).packages[0].version")"
+          echo "tag=$tag package.json=$npm_version Cargo.toml=$cargo_version"
+          [ "$tag" = "$npm_version" ] && [ "$tag" = "$cargo_version" ]
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Clipglass ${{ github.ref_name }}'
+          releaseBody: ''
+          releaseDraft: true
+          generateReleaseNotes: true
+          prerelease: false

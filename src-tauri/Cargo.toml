@@ -1,0 +1,45 @@
+[package]
+name = "clipglass"
+version = "0.1.0"
+description = "Clipglass - always-visible clipboard viewer"
+edition = "2021"
+
+[lib]
+name = "clipglass_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+
+[dependencies.windows]
+version = "0.62"
+features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_DataExchange",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+]
+
+# 画像の変換は依存クレート側が重いので、開発ビルドでも最適化する
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

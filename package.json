@@ -1,0 +1,24 @@
+{
+  "name": "clipglass",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "preact": "^10.28.3"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.10.3",
+    "@tauri-apps/cli": "^2",
+    "jsdom": "^26",
+    "vite": "^6",
+    "vitest": "^3"
+  }
+}
