@@ -2,7 +2,22 @@ import { useEffect, useState } from "preact/hooks";
 import { parseHistoryLimit } from "../settings.js";
 
 /** 履歴の件数、ディスク保存、ショートカット、自動起動などRust側が持つ設定。 */
-export function SettingsPanel({ config, onClose, onApply, onOpenPresets, onOpenDataDir }) {
+const CORNERS = [
+  ["top-left", "左上"],
+  ["top-right", "右上"],
+  ["bottom-left", "左下"],
+  ["bottom-right", "右下"],
+];
+
+export function SettingsPanel({
+  config,
+  onClose,
+  onApply,
+  onOpenPresets,
+  onOpenDataDir,
+  onSnap,
+  onResetSize,
+}) {
   const [maxItems, setMaxItems] = useState(config.historyMaxItems);
   const [hotkey, setHotkey] = useState(config.hotkey);
 
@@ -83,6 +98,23 @@ export function SettingsPanel({ config, onClose, onApply, onOpenPresets, onOpenD
           />
           <span>Windows にサインインしたときに自動で起動する</span>
         </label>
+
+        <div class="field">
+          <span>ウィンドウの位置と大きさ</span>
+          <div class="field-row wrap">
+            {CORNERS.map(([corner, label]) => (
+              <button key={corner} class="row-btn" title={`画面の${label}に寄せる`} onClick={() => onSnap(corner)}>
+                {label}
+              </button>
+            ))}
+            <button class="row-btn" title="大きさを初期値に戻す" onClick={onResetSize}>
+              標準の大きさ
+            </button>
+          </div>
+          <p class="hint">
+            キーボードでも動かせます。Ctrl+Shift+矢印で移動、Ctrl+Shift+Alt+矢印で大きさを変えます。
+          </p>
+        </div>
 
         <div class="field">
           <span>プリセット</span>

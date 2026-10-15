@@ -12,7 +12,7 @@ export function Toolbar({
   searchRef,
 }) {
   return (
-    <div id="toolbar">
+    <div id="toolbar" data-tauri-drag-region>
       <div class="tabs" role="tablist">
         <button
           class={`tab${view === "history" ? " active" : ""}`}

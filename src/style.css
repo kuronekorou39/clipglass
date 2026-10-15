@@ -22,6 +22,12 @@
   /* 行の余白。文字サイズに比例させる */
   --pad-x: 1em;
   --pad-y: 0.75em;
+  /* サイズ変更を受ける縁の幅と、四隅の大きさ */
+  --grip-edge: 6px;
+  --grip-corner: 14px;
+  /* 上辺はタイトルバーの上の余白(ボタンまでの距離)に収める */
+  --grip-top: 4px;
+  --titlebar-height: 32px;
 }
 
 * {
@@ -72,7 +78,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 32px;
+  height: var(--titlebar-height);
   padding: 0 4px 0 10px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border);
@@ -726,6 +732,101 @@ button {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   color: var(--text-bright);
+}
+
+/* === Resize handles === */
+/* OSの縁は数ピクセルしかないので、広めの透明な帯でサイズ変更を受ける。
+   上辺と上の角はタイトルバーのボタンに重ならないよう、余白の幅に収める。
+   左右の辺はタイトルバーより下から始める。 */
+.resize-handle {
+  position: fixed;
+  z-index: 20;
+}
+
+.resize-n {
+  top: 0;
+  left: var(--grip-top);
+  right: var(--grip-top);
+  height: var(--grip-top);
+  cursor: ns-resize;
+}
+
+.resize-s {
+  bottom: 0;
+  left: var(--grip-corner);
+  right: var(--grip-corner);
+  height: var(--grip-edge);
+  cursor: ns-resize;
+}
+
+.resize-e,
+.resize-w {
+  top: var(--titlebar-height);
+  bottom: var(--grip-corner);
+  width: var(--grip-edge);
+  cursor: ew-resize;
+}
+
+.resize-e { right: 0; }
+.resize-w { left: 0; }
+
+.resize-ne,
+.resize-nw {
+  top: 0;
+  width: var(--grip-top);
+  height: var(--grip-top);
+}
+
+.resize-se,
+.resize-sw {
+  bottom: 0;
+  width: var(--grip-corner);
+  height: var(--grip-corner);
+}
+
+.resize-ne { right: 0; cursor: nesw-resize; }
+.resize-sw { left: 0; cursor: nesw-resize; }
+.resize-nw { left: 0; cursor: nwse-resize; }
+.resize-se { right: 0; cursor: nwse-resize; }
+
+/* 右辺の帯とスクロールバーが重ならないよう、一覧を帯の幅だけ内側に寄せる */
+#history,
+#presets {
+  margin-right: var(--grip-edge);
+}
+
+/* 右下の見えるつまみ。縁が見えない半透明でも、つかむ場所がわかる */
+.resize-grip {
+  position: fixed;
+  right: 2px;
+  bottom: 2px;
+  width: 14px;
+  height: 14px;
+  z-index: 21;
+  cursor: nwse-resize;
+  background: linear-gradient(
+    135deg,
+    transparent 0 45%,
+    var(--text-dim) 45% 52%,
+    transparent 52% 65%,
+    var(--text-dim) 65% 72%,
+    transparent 72%
+  );
+}
+
+.resize-grip:hover {
+  background: linear-gradient(
+    135deg,
+    transparent 0 45%,
+    var(--accent) 45% 52%,
+    transparent 52% 65%,
+    var(--accent) 65% 72%,
+    transparent 72%
+  );
+}
+
+.field-row.wrap {
+  flex-wrap: wrap;
 }
 
 /* === List animation === */

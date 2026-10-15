@@ -3,6 +3,7 @@ mod config;
 mod history;
 mod imaging;
 mod limits;
+mod placement;
 mod presets;
 mod save;
 mod store;
@@ -29,6 +30,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use config::Config;
 use history::{Content, History, StateView};
+use placement::{Corner, Rect};
 use presets::NodeView;
 use store::Store;
 
@@ -40,6 +42,8 @@ const NOTICE_EVENT: &str = "notice";
 const HISTORY_DIR: &str = "history";
 const TRAY_SHOW: &str = "show";
 const TRAY_QUIT: &str = "quit";
+/// 画面の隅に置くときの、隅からの余白(論理ピクセル)。
+const SNAP_MARGIN: f64 = 8.0;
 
 /// データフォルダーの中の置き場所。`setup` で決まる。
 struct Paths {
@@ -190,6 +194,128 @@ fn set_pinned(window: WebviewWindow, state: State<AppState>, pinned: bool) -> Re
 fn show_window(window: WebviewWindow, state: State<AppState>) -> Result<(), String> {
     window.show().map_err(|e| e.to_string())?;
     apply_window_alpha(&window, &state)
+}
+
+fn physical_rect(rect: &tauri::PhysicalRect<i32, u32>) -> Rect {
+    Rect {
+        x: rect.position.x.into(),
+        y: rect.position.y.into(),
+        width: rect.size.width.into(),
+        height: rect.size.height.into(),
+    }
+}
+
+/// 今のウィンドウの位置と大きさ、今いるモニターの作業領域、すべての作業領域、
+/// 最小サイズ(物理ピクセル)、表示倍率。
+struct Placement {
+    rect: Rect,
+    current_area: Rect,
+    areas: Vec<Rect>,
+    min: (i64, i64),
+    scale: f64,
+}
+
+fn window_config(app: &AppHandle) -> Option<&tauri::utils::config::WindowConfig> {
+    app.config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == MAIN_WINDOW)
+}
+
+fn placement(window: &WebviewWindow) -> Result<Placement, String> {
+    let error = |e: tauri::Error| e.to_string();
+    let scale = window.scale_factor().map_err(error)?;
+    let position = window.outer_position().map_err(error)?;
+    let size = window.inner_size().map_err(error)?;
+    let rect = Rect {
+        x: position.x.into(),
+        y: position.y.into(),
+        width: size.width.into(),
+        height: size.height.into(),
+    };
+    let monitor = window
+        .current_monitor()
+        .map_err(error)?
+        .ok_or("ウィンドウのあるモニターが見つかりません")?;
+    let areas = window
+        .available_monitors()
+        .map_err(error)?
+        .iter()
+        .map(|monitor| physical_rect(monitor.work_area()))
+        .collect();
+    let config = window_config(window.app_handle());
+    let logical_min = (
+        config.and_then(|c| c.min_width).unwrap_or_default(),
+        config.and_then(|c| c.min_height).unwrap_or_default(),
+    );
+    Ok(Placement {
+        rect,
+        current_area: physical_rect(monitor.work_area()),
+        areas,
+        min: (
+            (logical_min.0 * scale).round() as i64,
+            (logical_min.1 * scale).round() as i64,
+        ),
+        scale,
+    })
+}
+
+fn apply_rect(window: &WebviewWindow, rect: Rect) -> Result<(), String> {
+    window
+        .set_size(tauri::PhysicalSize::new(
+            rect.width as u32,
+            rect.height as u32,
+        ))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_position(tauri::PhysicalPosition::new(rect.x as i32, rect.y as i32))
+        .map_err(|e| e.to_string())
+}
+
+/// 位置と大きさを論理ピクセルで少しずつ変える。キーボード操作で使う。
+#[tauri::command]
+fn nudge_window(window: WebviewWindow, dx: f64, dy: f64, dw: f64, dh: f64) -> Result<(), String> {
+    let current = placement(&window)?;
+    let physical = |value: f64| (value * current.scale).round() as i64;
+    let next = placement::nudge(
+        current.rect,
+        (physical(dx), physical(dy), physical(dw), physical(dh)),
+        current.min,
+        &current.areas,
+        current.current_area,
+    );
+    apply_rect(&window, next)
+}
+
+/// 大きさを保ったまま、今いるモニターの隅に置く。
+#[tauri::command]
+fn snap_window(window: WebviewWindow, corner: String) -> Result<(), String> {
+    let corner = Corner::parse(&corner).ok_or("隅の指定が不正です")?;
+    let current = placement(&window)?;
+    let margin = (SNAP_MARGIN * current.scale).round() as i64;
+    let next = placement::snap(
+        current.rect,
+        corner,
+        current.current_area,
+        margin,
+        current.min,
+    );
+    apply_rect(&window, next)
+}
+
+/// 大きさを初期値に戻す。位置は画面からはみ出さないように直す。
+#[tauri::command]
+fn reset_window_size(window: WebviewWindow) -> Result<(), String> {
+    let current = placement(&window)?;
+    let config = window_config(window.app_handle()).ok_or("ウィンドウの設定が見つかりません")?;
+    let resized = Rect {
+        width: (config.width * current.scale).round() as i64,
+        height: (config.height * current.scale).round() as i64,
+        ..current.rect
+    };
+    let next = placement::clamp_into(resized, current.current_area, current.min);
+    apply_rect(&window, next)
 }
 
 /// 通知領域に残して、ウィンドウだけを隠す。
@@ -596,6 +722,9 @@ pub fn run() {
             set_pinned,
             show_window,
             hide_window,
+            nudge_window,
+            snap_window,
+            reset_window_size,
             save_image,
             get_config,
             set_history_limit,

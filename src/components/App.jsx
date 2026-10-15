@@ -11,6 +11,8 @@ import { HistoryItem } from "./HistoryItem.jsx";
 import { PresetTree } from "./PresetTree.jsx";
 import { RegisterPresetForm } from "./RegisterPresetForm.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
+import { ResizeHandles } from "./ResizeHandles.jsx";
+import { windowKeyAction } from "../windowKeys.js";
 
 const STATE_EVENT = "clipboard-state";
 const NOTICE_EVENT = "notice";
@@ -117,6 +119,12 @@ export function App() {
   // Ctrl と +/-/0 またはホイールでも文字サイズを変えられる
   useEffect(() => {
     const onKeyDown = (e) => {
+      const nudge = windowKeyAction(e);
+      if (nudge) {
+        e.preventDefault();
+        invoke("nudge_window", nudge);
+        return;
+      }
       if (e.key === "Escape") {
         setSettingsOpen(false);
         setRegistering(null);
@@ -319,9 +327,12 @@ export function App() {
           onApply={applyConfig}
           onOpenPresets={() => runOrToast(() => invoke("open_presets_file"))}
           onOpenDataDir={() => runOrToast(() => invoke("open_data_dir"))}
+          onSnap={(corner) => runOrToast(() => invoke("snap_window", { corner }))}
+          onResetSize={() => runOrToast(() => invoke("reset_window_size"))}
         />
       )}
       {toast && <div class={`toast${toast.isError ? " toast-error" : ""}`}>{toast.message}</div>}
+      <ResizeHandles />
     </>
   );
 }
