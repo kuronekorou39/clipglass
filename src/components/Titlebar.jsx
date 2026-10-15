@@ -1,7 +1,24 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { OPACITY_MAX, OPACITY_MIN, OPACITY_STEP } from "../settings.js";
+import {
+  FONT_SIZE_MAX,
+  FONT_SIZE_MIN,
+  OPACITY_MAX,
+  OPACITY_MIN,
+  OPACITY_STEP,
+} from "../settings.js";
 
-export function Titlebar({ pinned, opacity, wrap, onPinToggle, onOpacityChange, onWrapToggle }) {
+export function Titlebar({
+  pinned,
+  opacity,
+  wrap,
+  fontSize,
+  paused,
+  onPauseToggle,
+  onPinToggle,
+  onOpacityChange,
+  onWrapToggle,
+  onFontSizeStep,
+}) {
   return (
     <div id="titlebar" data-tauri-drag-region>
       <span class="titlebar-title" data-tauri-drag-region>
@@ -20,12 +37,38 @@ export function Titlebar({ pinned, opacity, wrap, onPinToggle, onOpacityChange, 
           onInput={(e) => onOpacityChange(parseInt(e.target.value))}
         />
         <button
+          class="titlebar-btn font-smaller"
+          title={`文字を小さく(現在 ${fontSize}px、Ctrl+-)`}
+          aria-label="文字を小さく"
+          disabled={fontSize <= FONT_SIZE_MIN}
+          onClick={() => onFontSizeStep(-1)}
+        >
+          A
+        </button>
+        <button
+          class="titlebar-btn font-larger"
+          title={`文字を大きく(現在 ${fontSize}px、Ctrl++)`}
+          aria-label="文字を大きく"
+          disabled={fontSize >= FONT_SIZE_MAX}
+          onClick={() => onFontSizeStep(1)}
+        >
+          A
+        </button>
+        <button
           class={`titlebar-btn${wrap ? " active" : ""}`}
           title={wrap ? "テキストを折り返さない" : "テキストを折り返す"}
           aria-pressed={wrap}
           onClick={onWrapToggle}
         >
           {"↵"}
+        </button>
+        <button
+          class={`titlebar-btn${paused ? " paused" : ""}`}
+          title={paused ? "読み取りを再開する" : "読み取りを停止する"}
+          aria-pressed={paused}
+          onClick={onPauseToggle}
+        >
+          {paused ? "\u25B6\uFE0E" : "\u2016"}
         </button>
         <button
           class={`titlebar-btn${pinned ? " active" : ""}`}

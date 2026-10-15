@@ -19,13 +19,16 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::clipboard::{self, Payload};
-use crate::history::{hash_text, Content, Status, StoredImage};
+use crate::history::{Content, Probe, Status, StoredImage};
 use crate::imaging::{self, DecodeError, RawImage};
 use crate::limits::CLIPBOARD_SETTLE_DELAY_MS;
 use crate::AppState;
 
-/// 履歴の項目をクリップボードへ書き戻す要求。wParamに項目IDを入れる。
+/// 履歴の項目をクリップボードへ書き戻す要求。
+/// wParamに項目ID、lParamに書式を落とすかどうか(0以外で文字だけ)を入れる。
 pub const WM_COPY_ITEM: u32 = WM_APP + 1;
+/// 現在のクリップボードを読み直す要求。読み取りの再開時に使う。
+pub const WM_REFRESH: u32 = WM_APP + 2;
 pub const STATE_EVENT: &str = "clipboard-state";
 const READ_TIMER_ID: usize = 1;
 
@@ -48,13 +51,12 @@ fn set_status(app: &AppHandle, status: Status) {
         .set_status(status);
 }
 
-fn record_text(app: &AppHandle, text: String, formats: Vec<String>) {
-    let hash = hash_text(&text);
+fn record_files(app: &AppHandle, paths: Vec<String>, formats: Vec<String>) {
     let now = now_ms();
     let state = app.state::<AppState>();
     let mut history = state.history.lock().unwrap();
-    if !history.promote(hash, Some(&text), &formats, now) {
-        history.insert(hash, Content::Text(text), formats, now);
+    if !history.promote(&Probe::Files(&paths), &formats, now) {
+        history.insert(Content::Files(paths), formats, now);
     }
 }
 
@@ -66,7 +68,7 @@ fn record_image(app: &AppHandle, raw: RawImage, formats: Vec<String>) -> Result<
         .history
         .lock()
         .unwrap()
-        .promote(hash, None, &formats, now_ms())
+        .promote(&Probe::Image(hash), &formats, now_ms())
     {
         return Ok(());
     }
@@ -83,17 +85,20 @@ fn record_image(app: &AppHandle, raw: RawImage, formats: Vec<String>) -> Result<
         thumbnail: Arc::new(thumbnail),
         width: image.width(),
         height: image.height(),
+        hash,
     });
     state
         .history
         .lock()
         .unwrap()
-        .insert(hash, content, formats, now_ms());
+        .insert(content, formats, now_ms());
     Ok(())
 }
 
-fn emit_state(app: &AppHandle) {
-    let view = app.state::<AppState>().history.lock().unwrap().view();
+pub fn emit_state(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let paused = state.paused.load(Ordering::Relaxed);
+    let view = state.history.lock().unwrap().view(paused);
     let _ = app.emit(STATE_EVENT, view);
 }
 
@@ -106,7 +111,12 @@ fn refresh(app: &AppHandle, hwnd: HWND) {
             let formats = snapshot.formats;
             match snapshot.payload {
                 Payload::Empty => set_status(app, Status::Empty),
-                Payload::Text(text) => record_text(app, text, formats),
+                Payload::Text { text, rich } => app
+                    .state::<AppState>()
+                    .history
+                    .lock()
+                    .unwrap()
+                    .record_text(text, rich, formats, now_ms()),
                 Payload::Image(raw) => match record_image(app, raw, formats.clone()) {
                     Ok(()) => {}
                     Err(DecodeError::TooLarge) => set_status(app, Status::TooLarge { formats }),
@@ -114,7 +124,7 @@ fn refresh(app: &AppHandle, hwnd: HWND) {
                         set_status(app, Status::Error { message })
                     }
                 },
-                Payload::Files(names) => set_status(app, Status::Files { names, formats }),
+                Payload::Files(paths) => record_files(app, paths, formats),
                 Payload::Unsupported => set_status(app, Status::Unsupported { formats }),
                 Payload::TooLarge => set_status(app, Status::TooLarge { formats }),
             }
@@ -124,26 +134,28 @@ fn refresh(app: &AppHandle, hwnd: HWND) {
 }
 
 /// 履歴の項目を書き戻す。成功すれば変更通知が届き、通常の経路で先頭へ移動する。
-fn copy_item(app: &AppHandle, hwnd: HWND, id: u64) {
-    enum Source {
-        Text(String),
-        Png(Arc<Vec<u8>>),
-    }
+/// `plain` が真なら、保存してある書式付きデータを付けずに文字だけを置く。
+fn copy_item(app: &AppHandle, hwnd: HWND, id: u64, plain: bool) {
     let state = app.state::<AppState>();
-    let source = {
+    let result = {
+        // 画像以外は小さいので、ロックしたまま書き戻す。
         let history = state.history.lock().unwrap();
         match history.get(id).map(|item| &item.content) {
-            Some(Content::Text(text)) => Source::Text(text.clone()),
-            Some(Content::Image(image)) => Source::Png(Arc::clone(&image.png)),
+            Some(Content::Text { text, rich }) => {
+                let rich = if plain { &[][..] } else { rich.as_slice() };
+                clipboard::write_text(hwnd, text, rich)
+            }
+            Some(Content::Files(paths)) => clipboard::write_files(hwnd, paths),
+            Some(Content::Image(image)) => {
+                let png = Arc::clone(&image.png);
+                drop(history);
+                match imaging::decode(&RawImage::Png(png.to_vec())) {
+                    Ok(image) => clipboard::write_image(hwnd, &png, &imaging::to_dib(&image)),
+                    Err(_) => Err("画像を変換できませんでした".to_string()),
+                }
+            }
             None => return,
         }
-    };
-    let result = match source {
-        Source::Text(text) => clipboard::write_text(hwnd, &text),
-        Source::Png(png) => match imaging::decode(&RawImage::Png(png.to_vec())) {
-            Ok(image) => clipboard::write_image(hwnd, &png, &imaging::to_dib(&image)),
-            Err(_) => Err("画像を変換できませんでした".to_string()),
-        },
     };
     if let Err(message) = result {
         set_status(app, Status::Error { message });
@@ -168,13 +180,19 @@ unsafe extern "system" fn window_proc(
         }
         WM_TIMER if wparam.0 == READ_TIMER_ID => {
             let _ = KillTimer(Some(hwnd), READ_TIMER_ID);
-            if GetClipboardSequenceNumber() != LAST_SEQUENCE.load(Ordering::Relaxed) {
+            // 停止中はクリップボードに一切触らない。
+            let paused = app.state::<AppState>().paused.load(Ordering::Relaxed);
+            if !paused && GetClipboardSequenceNumber() != LAST_SEQUENCE.load(Ordering::Relaxed) {
                 refresh(app, hwnd);
             }
             LRESULT(0)
         }
+        WM_REFRESH => {
+            refresh(app, hwnd);
+            LRESULT(0)
+        }
         WM_COPY_ITEM => {
-            copy_item(app, hwnd, wparam.0 as u64);
+            copy_item(app, hwnd, wparam.0 as u64, lparam.0 != 0);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -223,7 +241,10 @@ unsafe fn run(app: AppHandle) -> windows::core::Result<()> {
 pub fn spawn(app: AppHandle) {
     std::thread::spawn(move || {
         if let Err(e) = unsafe { run(app.clone()) } {
-            let message = format!("クリップボードの監視を開始できませんでした: {}", e.message());
+            let message = format!(
+                "クリップボードの監視を開始できませんでした: {}",
+                e.message()
+            );
             set_status(&app, Status::Error { message });
             emit_state(&app);
         }

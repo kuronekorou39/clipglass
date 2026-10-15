@@ -1,16 +1,12 @@
-import { summarizeFormats } from "../format.js";
+import { richFormatLabels } from "../format.js";
 
-export function FormatBadges({ formats }) {
-  const { badges, otherCount, rich } = summarizeFormats(formats);
+/** 書式情報(HTML・RTF)を含むコピーにだけ表示する。 */
+export function RichBadge({ formats }) {
+  const labels = richFormatLabels(formats);
+  if (labels.length === 0) return null;
   return (
-    <span class="badges">
-      {rich && <span class="badge badge-rich">書式付き</span>}
-      {badges.map((label) => (
-        <span class="badge" key={label}>
-          {label}
-        </span>
-      ))}
-      {otherCount > 0 && <span class="badge badge-other">その他 {otherCount}</span>}
+    <span class="badge-rich" title="文字の色や太字などの書式情報も一緒にコピーされています">
+      書式付き {labels.join("・")}
     </span>
   );
 }

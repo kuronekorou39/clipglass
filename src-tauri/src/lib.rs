@@ -30,27 +30,54 @@ pub struct AppState {
     /// 監視スレッドのウィンドウ。書き戻しの要求を送る先。
     pub watcher_hwnd: AtomicIsize,
     saving: AtomicBool,
+    /// 読み取り停止中かどうか。停止中は変更通知が来てもクリップボードを開かない。
+    pub paused: AtomicBool,
     /// 現在の不透明度(0〜255)。スタイルが作り直されたときの掛け直しに使う。
     window_alpha: AtomicU8,
 }
 
 #[tauri::command]
 fn get_state(state: State<AppState>) -> StateView {
-    state.history.lock().unwrap().view()
+    state
+        .history
+        .lock()
+        .unwrap()
+        .view(state.paused.load(Ordering::Relaxed))
 }
 
 #[tauri::command]
-fn copy_item(state: State<AppState>, id: u64) -> Result<(), String> {
+fn post_to_watcher(
+    state: &AppState,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+) -> Result<(), String> {
     let hwnd = HWND(state.watcher_hwnd.load(Ordering::Relaxed) as *mut _);
-    unsafe {
-        PostMessageW(
-            Some(hwnd),
-            watcher::WM_COPY_ITEM,
-            WPARAM(id as usize),
-            LPARAM(0),
-        )
+    unsafe { PostMessageW(Some(hwnd), message, WPARAM(wparam), LPARAM(lparam)) }
+        .map_err(|e| e.message())
+}
+
+/// `plain` が真なら、書式付きデータを付けずに文字だけをコピーする。
+#[tauri::command]
+fn copy_item(state: State<AppState>, id: u64, plain: bool) -> Result<(), String> {
+    post_to_watcher(
+        &state,
+        watcher::WM_COPY_ITEM,
+        id as usize,
+        isize::from(plain),
+    )
+}
+
+#[tauri::command]
+fn set_paused(app: AppHandle, state: State<AppState>, paused: bool) -> Result<(), String> {
+    state.paused.store(paused, Ordering::Relaxed);
+    if paused {
+        watcher::emit_state(&app);
+        Ok(())
+    } else {
+        // 再開したら、その時点の内容を読み直す。
+        post_to_watcher(&state, watcher::WM_REFRESH, 0, 0)
     }
-    .map_err(|e| e.message())
 }
 
 /// ウィンドウ全体に不透明度を掛ける。
@@ -81,7 +108,9 @@ fn set_window_opacity(
 
 #[tauri::command]
 fn set_pinned(window: WebviewWindow, state: State<AppState>, pinned: bool) -> Result<(), String> {
-    window.set_always_on_top(pinned).map_err(|e| e.to_string())?;
+    window
+        .set_always_on_top(pinned)
+        .map_err(|e| e.to_string())?;
     apply_window_alpha(&window, &state)
 }
 
@@ -204,6 +233,7 @@ pub fn run() {
             history: Mutex::new(History::default()),
             watcher_hwnd: AtomicIsize::new(0),
             saving: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
             window_alpha: AtomicU8::new(u8::MAX),
         })
         .register_uri_scheme_protocol(IMAGE_SCHEME, |context, request| {
@@ -223,6 +253,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             copy_item,
+            set_paused,
             set_window_opacity,
             set_pinned,
             show_window,

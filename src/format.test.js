@@ -1,33 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { formatTime, imageUrl, summarizeFormats } from "./format.js";
+import { fileName, formatTime, imageUrl, richFormatLabels } from "./format.js";
 
-describe("summarizeFormats", () => {
-  it("プレーンテキストだけなら書式なし", () => {
-    expect(summarizeFormats(["CF_UNICODETEXT", "CF_LOCALE", "CF_TEXT", "CF_OEMTEXT"])).toEqual({
-      badges: ["テキスト"],
-      otherCount: 0,
-      rich: false,
-    });
+describe("richFormatLabels", () => {
+  it("プレーンテキストだけなら空", () => {
+    expect(richFormatLabels(["CF_UNICODETEXT", "CF_LOCALE", "CF_TEXT"])).toEqual([]);
   });
 
-  it("HTMLがあれば書式付き", () => {
-    const summary = summarizeFormats(["HTML Format", "CF_UNICODETEXT"]);
-    expect(summary.badges).toEqual(["テキスト", "HTML"]);
-    expect(summary.rich).toBe(true);
+  it("HTMLとRTFを表示名で返す", () => {
+    expect(richFormatLabels(["Rich Text Format", "CF_UNICODETEXT", "HTML Format"])).toEqual([
+      "HTML",
+      "RTF",
+    ]);
   });
 
-  it("RTFだけでも書式付き", () => {
-    expect(summarizeFormats(["Rich Text Format"]).rich).toBe(true);
+  it("画像やファイルは書式として扱わない", () => {
+    expect(richFormatLabels(["PNG", "CF_DIB", "CF_HDROP", "XML Spreadsheet"])).toEqual([]);
   });
+});
 
-  it("未知の形式はその他として数える", () => {
-    const summary = summarizeFormats(["CF_UNICODETEXT", "XML Spreadsheet", "Biff12", "CF_DIB"]);
-    expect(summary.badges).toEqual(["テキスト", "画像"]);
-    expect(summary.otherCount).toBe(2);
-  });
-
-  it("ファイルのコピーを判別する", () => {
-    expect(summarizeFormats(["CF_HDROP", "FileNameW"]).badges).toEqual(["ファイル"]);
+describe("fileName", () => {
+  it("フルパスからファイル名を取り出す", () => {
+    expect(fileName("C:\\work\\報告書.xlsx")).toBe("報告書.xlsx");
+    expect(fileName("memo.txt")).toBe("memo.txt");
   });
 });
 
