@@ -4,6 +4,7 @@ import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   loadSettings,
+  parseHistoryLimit,
   saveSettings,
   stepFontSize,
 } from "./settings.js";
@@ -44,5 +45,20 @@ describe("stepFontSize", () => {
   it("範囲の外には出ない", () => {
     expect(stepFontSize(FONT_SIZE_MAX, 1)).toBe(FONT_SIZE_MAX);
     expect(stepFontSize(FONT_SIZE_MIN, -1)).toBe(FONT_SIZE_MIN);
+  });
+});
+
+describe("parseHistoryLimit", () => {
+  it("整数にして範囲に収める", () => {
+    expect(parseHistoryLimit("25", 200)).toBe(25);
+    expect(parseHistoryLimit("0", 200)).toBe(1);
+    expect(parseHistoryLimit("-3", 200)).toBe(1);
+    expect(parseHistoryLimit("999", 200)).toBe(200);
+    expect(parseHistoryLimit("12.9", 200)).toBe(12);
+  });
+
+  it("数として読めなければ null", () => {
+    expect(parseHistoryLimit("", 200)).toBe(null);
+    expect(parseHistoryLimit("abc", 200)).toBe(null);
   });
 });

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::limits::{DEFAULT_HISTORY_MAX_ITEMS, HISTORY_MAX_ITEMS_LIMIT};
 
 pub const FILE_NAME: &str = "config.yaml";
+const BROKEN_FILE_NAME: &str = "config.broken.yaml";
 /// ウィンドウの表示/非表示を切り替えるショートカットの初期値。
 pub const DEFAULT_HOTKEY: &str = "Ctrl+Shift+V";
 
@@ -63,13 +64,24 @@ pub fn parse(yaml: &str) -> Result<Config, String> {
     Ok(config)
 }
 
-/// ファイルがない、または読めない場合は初期値を返す。
+/// ファイルがなければ初期値を返す。読めない場合は、次の保存で上書きしてしまわないよう
+/// `config.broken.yaml` に写してから失敗を返す。
 pub fn load(path: &Path) -> Result<Config, String> {
-    match fs::read_to_string(path) {
-        Ok(yaml) => parse(&yaml),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-        Err(e) => Err(e.to_string()),
-    }
+    let yaml = match fs::read_to_string(path) {
+        Ok(yaml) => yaml,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
+        Err(e) => return Err(e.to_string()),
+    };
+    parse(&yaml).map_err(|message| {
+        let backup = path.with_file_name(BROKEN_FILE_NAME);
+        match fs::copy(path, &backup) {
+            Ok(_) => format!(
+                "{message}(元のファイルは {} に写しました)",
+                backup.display()
+            ),
+            Err(e) => format!("{message}(写しを作れませんでした: {e})"),
+        }
+    })
 }
 
 pub fn save(path: &Path, config: &Config) -> Result<(), String> {
@@ -95,9 +107,18 @@ mod tests {
 
     #[test]
     fn max_items_is_clamped() {
-        assert_eq!(parse("history:\n  max_items: 0\n").unwrap().history.max_items, 1);
         assert_eq!(
-            parse("history:\n  max_items: 100000\n").unwrap().history.max_items,
+            parse("history:\n  max_items: 0\n")
+                .unwrap()
+                .history
+                .max_items,
+            1
+        );
+        assert_eq!(
+            parse("history:\n  max_items: 100000\n")
+                .unwrap()
+                .history
+                .max_items,
             HISTORY_MAX_ITEMS_LIMIT
         );
     }
@@ -117,6 +138,32 @@ mod tests {
         assert!(fs::read_to_string(&path).unwrap().starts_with('#'));
         assert_eq!(load(&path).unwrap(), config);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn broken_file_is_copied_aside_and_reported() {
+        let dir =
+            std::env::temp_dir().join(format!("clipglass-config-broken-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE_NAME);
+        fs::write(&path, "history: [1, 2\n").unwrap();
+
+        let error = load(&path).unwrap_err();
+        assert!(error.contains(BROKEN_FILE_NAME), "{error}");
+        assert_eq!(
+            fs::read_to_string(dir.join(BROKEN_FILE_NAME)).unwrap(),
+            "history: [1, 2\n"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unknown_keys_and_wrong_types_do_not_panic() {
+        let config = parse("hotkey: '  Alt+Q '\nfuture_key: 1\n").unwrap();
+        assert_eq!(config.hotkey, "Alt+Q");
+        assert!(parse("history:\n  max_items: many\n").is_err());
+        assert!(parse("history:\n  persist: 3\n").is_err());
+        assert!(parse("- a\n").is_err());
     }
 
     #[test]

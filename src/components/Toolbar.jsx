@@ -1,4 +1,4 @@
-import { KINDS } from "../search.js";
+import { KINDS, toggleKind } from "../search.js";
 
 /** 履歴とプリセットの切り替え、検索、種類の絞り込み、設定を開くボタン。 */
 export function Toolbar({
@@ -11,9 +11,6 @@ export function Toolbar({
   onSettingsOpen,
   searchRef,
 }) {
-  const toggleKind = (kind) => {
-    onKindsChange(kinds.includes(kind) ? kinds.filter((k) => k !== kind) : [...kinds, kind]);
-  };
   return (
     <div id="toolbar">
       <div class="tabs" role="tablist">
@@ -51,7 +48,7 @@ export function Toolbar({
               class={`chip${kinds.includes(kind) ? " active" : ""}`}
               aria-pressed={kinds.includes(kind)}
               title={`${label}を表示する`}
-              onClick={() => toggleKind(kind)}
+              onClick={() => onKindsChange(toggleKind(kinds, kind))}
             >
               {label}
             </button>

@@ -274,13 +274,17 @@ unsafe fn set_data(format: u32, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// テキストを置く。`rich` があれば、保存してあった書式付きデータも一緒に置く。
-pub fn write_text(owner: HWND, text: &str, rich: &[RichFormat]) -> Result<(), String> {
-    let bytes: Vec<u8> = text
-        .encode_utf16()
+/// CF_UNICODETEXT の中身。UTF-16LE に終端の0を付けたもの。
+fn utf16_with_terminator(text: &str) -> Vec<u8> {
+    text.encode_utf16()
         .chain(std::iter::once(0))
         .flat_map(u16::to_le_bytes)
-        .collect();
+        .collect()
+}
+
+/// テキストを置く。`rich` があれば、保存してあった書式付きデータも一緒に置く。
+pub fn write_text(owner: HWND, text: &str, rich: &[RichFormat]) -> Result<(), String> {
+    let bytes = utf16_with_terminator(text);
     unsafe {
         let _guard = OpenClipboardGuard::open(owner)?;
         EmptyClipboard().map_err(|e| e.message())?;
@@ -333,6 +337,30 @@ pub fn write_image(owner: HWND, png: &[u8], dib: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_text_is_encoded_with_surrogates_and_terminator() {
+        let bytes = utf16_with_terminator("aé😀");
+        assert_eq!(
+            bytes,
+            [0x61, 0x00, 0xE9, 0x00, 0x3D, 0xD8, 0x00, 0xDE, 0x00, 0x00]
+        );
+        assert_eq!(utf16_with_terminator(""), [0, 0]);
+    }
+
+    #[test]
+    fn predefined_format_ids_are_unique_and_named() {
+        for (i, (id, _)) in PREDEFINED_FORMATS.iter().enumerate() {
+            assert!(
+                !PREDEFINED_FORMATS[..i].iter().any(|(other, _)| other == id),
+                "0x{id:X} が重複しています"
+            );
+        }
+        assert_eq!(format_name(CF_UNICODETEXT), "CF_UNICODETEXT");
+        assert_eq!(format_name(CF_HDROP), "CF_HDROP");
+        // 登録されていない番号は16進で示す
+        assert_eq!(format_name(0xFFFE), "0xFFFE");
+    }
 
     #[test]
     fn drop_files_layout() {

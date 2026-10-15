@@ -201,7 +201,9 @@ pub fn insert(root: &mut Root, path: &[String], text: String) -> Result<(), Stri
         current = match &mut current[index].1 {
             Node::Folder(children) => children,
             Node::Text(_) => {
-                return Err(format!("「{folder}」はプリセットなので、中に登録できません"))
+                return Err(format!(
+                    "「{folder}」はプリセットなので、中に登録できません"
+                ))
             }
         };
     }
@@ -232,16 +234,18 @@ pub fn remove(root: &mut Root, path: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// ファイルがなければ、例を書いたファイルを作る。中身は読まない。
+pub fn ensure_exists(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        return Ok(());
+    }
+    write(path, INITIAL_FILE)
+}
+
 /// ファイルを読む。なければ例を書いたファイルを作る。
 pub fn load(path: &Path) -> Result<Root, String> {
-    match fs::read_to_string(path) {
-        Ok(yaml) => parse(&yaml),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            write(path, INITIAL_FILE)?;
-            parse(INITIAL_FILE)
-        }
-        Err(e) => Err(e.to_string()),
-    }
+    ensure_exists(path)?;
+    parse(&fs::read_to_string(path).map_err(|e| e.to_string())?)
 }
 
 fn write(path: &Path, body: &str) -> Result<(), String> {
@@ -365,13 +369,111 @@ mod tests {
         assert!(remove(&mut root, &path(&["署名", "x"])).is_err());
     }
 
+    /// YAMLで特別な意味を持つ文字や空白を、アプリが書いたファイルから元どおり読めること。
+    #[test]
+    fn tricky_texts_and_names_survive_save_and_load() {
+        let dir =
+            std::env::temp_dir().join(format!("clipglass-presets-tricky-{}", std::process::id()));
+        let file = dir.join(FILE_NAME);
+        let long = "長い".repeat(5000);
+        let texts = [
+            "null",
+            "~",
+            "true",
+            "123",
+            "1.5",
+            "",
+            " 先頭に空白",
+            "末尾に改行\n",
+            "行1\r\n行2",
+            "タブ\tあり",
+            "a: b",
+            "- リスト風",
+            "# コメント風",
+            "'引用'",
+            "\"二重\"",
+            "{}",
+            "[]",
+            "改行だけ\n\n\n",
+            long.as_str(),
+        ];
+        let names = [
+            "null",
+            "123",
+            "a: b",
+            "a/b",
+            "- x",
+            "名前 \"引用\"",
+            "#",
+            "yes",
+        ];
+        let mut root = Vec::new();
+        for (i, text) in texts.iter().enumerate() {
+            insert(&mut root, &path(&["文字", &format!("t{i}")]), s(text)).unwrap();
+        }
+        for name in names {
+            insert(&mut root, &path(&["名前", name]), s("x")).unwrap();
+        }
+        save(&file, &root).unwrap();
+        let loaded = load(&file).unwrap();
+        assert_eq!(loaded, root);
+        for (i, text) in texts.iter().enumerate() {
+            assert_eq!(
+                find_text(&loaded, &path(&["文字", &format!("t{i}")])),
+                Some(*text)
+            );
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn empty_folder_survives_roundtrip() {
+        let root: Root = vec![("空".into(), Node::Folder(Vec::new()))];
+        let yaml = to_yaml(&root).unwrap();
+        assert_eq!(parse(&yaml).unwrap(), root);
+    }
+
+    #[test]
+    fn removing_the_last_item_leaves_an_empty_folder() {
+        let mut root = Vec::new();
+        insert(&mut root, &path(&["a", "b"]), s("1")).unwrap();
+        remove(&mut root, &path(&["a", "b"])).unwrap();
+        assert_eq!(root, vec![("a".into(), Node::Folder(Vec::new()))]);
+        assert!(to_yaml(&Vec::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn handwritten_scalars_are_read_as_text() {
+        let root = parse("a: yes\nb: 1.50\nc: ~\nd:\ne: 'null'\n").unwrap();
+        assert_eq!(find_text(&root, &path(&["a"])), Some("yes"));
+        assert_eq!(find_text(&root, &path(&["b"])), Some("1.5"));
+        assert_eq!(find_text(&root, &path(&["c"])), Some(""));
+        assert_eq!(find_text(&root, &path(&["d"])), Some(""));
+        assert_eq!(find_text(&root, &path(&["e"])), Some("null"));
+    }
+
+    #[test]
+    fn broken_file_is_reported_without_touching_it() {
+        let dir =
+            std::env::temp_dir().join(format!("clipglass-presets-broken-{}", std::process::id()));
+        let file = dir.join(FILE_NAME);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&file, "a: [1\n").unwrap();
+        assert!(load(&file).is_err());
+        ensure_exists(&file).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "a: [1\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn missing_file_is_created_with_example() {
         let dir = std::env::temp_dir().join(format!("clipglass-presets-{}", std::process::id()));
         let file = dir.join(FILE_NAME);
         let mut root = load(&file).unwrap();
         assert!(find_text(&root, &path(&["例", "挨拶"])).is_some());
-        assert!(fs::read_to_string(&file).unwrap().starts_with("# Clipglass"));
+        assert!(fs::read_to_string(&file)
+            .unwrap()
+            .starts_with("# Clipglass"));
 
         insert(&mut root, &path(&["追加"]), s("a\nb")).unwrap();
         save(&file, &root).unwrap();

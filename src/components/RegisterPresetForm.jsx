@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { firstLine } from "../search.js";
-
-const ROOT = "";
+import { ROOT_FOLDER_KEY, buildPresetPath, defaultPresetName, folderKey } from "../presets.js";
 
 /** 履歴のテキストをプリセットに登録するときの、名前とフォルダーの入力。 */
 export function RegisterPresetForm({ item, folders, onSubmit, onCancel }) {
-  const [name, setName] = useState(firstLine(item.text).slice(0, 20));
-  const [folder, setFolder] = useState(ROOT);
+  const [name, setName] = useState(defaultPresetName(item.text));
+  const [folder, setFolder] = useState(ROOT_FOLDER_KEY);
   const [newFolder, setNewFolder] = useState("");
   const nameRef = useRef(null);
 

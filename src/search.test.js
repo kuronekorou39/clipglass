@@ -6,6 +6,7 @@ import {
   firstLine,
   folderPaths,
   matchesQuery,
+  toggleKind,
 } from "./search.js";
 
 const text = { id: 1, kind: "text", text: "Hello World\n二行目" };
@@ -103,5 +104,13 @@ describe("firstLine", () => {
   it("空でない最初の行を返す", () => {
     expect(firstLine("\n  \n 二行目 \n三行目")).toBe("二行目");
     expect(firstLine("")).toBe("");
+  });
+});
+
+describe("toggleKind", () => {
+  it("外して戻すと順序が元に戻る", () => {
+    expect(toggleKind(allKinds, "image")).toEqual(["text", "files"]);
+    expect(toggleKind(["text", "files"], "image")).toEqual(allKinds);
+    expect(toggleKind(["text"], "text")).toEqual([]);
   });
 });

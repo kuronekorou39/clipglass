@@ -61,3 +61,9 @@ export function firstLine(text) {
   const line = text.split(/\r?\n/).find((part) => part.trim() !== "") ?? "";
   return line.trim();
 }
+
+/** 種類の絞り込みを1つ切り替える。並びは `KINDS` の順に保つ。 */
+export function toggleKind(kinds, kind) {
+  const next = kinds.includes(kind) ? kinds.filter((k) => k !== kind) : [...kinds, kind];
+  return KINDS.map(([k]) => k).filter((k) => next.includes(k));
+}

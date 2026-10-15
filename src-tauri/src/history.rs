@@ -455,7 +455,15 @@ mod tests {
     fn loaded_items_go_to_the_end_without_becoming_current() {
         let mut history = History::default();
         history.append_loaded(Content::Files(vec!["x".into()]), Vec::new(), true, 7);
-        history.append_loaded(Content::Text { text: "t".into(), rich: Vec::new() }, Vec::new(), false, 8);
+        history.append_loaded(
+            Content::Text {
+                text: "t".into(),
+                rich: Vec::new(),
+            },
+            Vec::new(),
+            false,
+            8,
+        );
         assert_eq!(summary(&history), ["x", "t"]);
         assert_eq!(history.current_id, None);
         assert!(history.items[0].pinned);
@@ -465,6 +473,55 @@ mod tests {
         add_text(&mut history, "t", 9);
         assert_eq!(summary(&history), ["t", "x"]);
         assert_eq!(history.current_id, Some(history.items[0].id));
+    }
+
+    #[test]
+    fn promote_and_recopy_keep_the_pinned_flag_and_rich_data() {
+        let mut history = History::default();
+        history.append_loaded(
+            Content::Text {
+                text: "a".into(),
+                rich: html("<b>a</b>"),
+            },
+            Vec::new(),
+            true,
+            1,
+        );
+        add_text(&mut history, "b", 2);
+        add_text(&mut history, "a", 3);
+        assert_eq!(summary(&history), ["a", "b"]);
+        assert!(history.items[0].pinned);
+        assert_eq!(stored_html(&history), Some("<b>a</b>".as_bytes()));
+    }
+
+    #[test]
+    fn pinned_items_can_be_removed() {
+        let mut history = History::default();
+        add_text(&mut history, "a", 1);
+        let id = history.items[0].id;
+        history.set_pinned(id, true);
+        assert!(history.remove(id));
+        assert!(history.items.is_empty());
+    }
+
+    #[test]
+    fn limit_is_clamped_and_applies_to_loaded_items() {
+        let mut history = History::default();
+        history.set_max_items(HISTORY_MAX_ITEMS_LIMIT + 1);
+        assert_eq!(history.max_items, HISTORY_MAX_ITEMS_LIMIT);
+        for i in 0..4 {
+            history.append_loaded(
+                Content::Text {
+                    text: i.to_string(),
+                    rich: Vec::new(),
+                },
+                Vec::new(),
+                i == 3,
+                i,
+            );
+        }
+        history.set_max_items(2);
+        assert_eq!(summary(&history), ["0", "1", "3"]);
     }
 
     #[test]

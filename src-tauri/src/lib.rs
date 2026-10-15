@@ -268,10 +268,7 @@ fn get_config(app: AppHandle, state: State<AppState>) -> ConfigView {
 }
 
 /// 設定を書き換えて保存する。履歴のロックを持ったまま呼ばない。
-fn update_config(
-    state: &AppState,
-    change: impl FnOnce(&mut Config),
-) -> Result<Config, String> {
+fn update_config(state: &AppState, change: impl FnOnce(&mut Config)) -> Result<Config, String> {
     let mut config = state.config.lock().unwrap();
     change(&mut config);
     config::save(&state.paths().config_file, &config)?;
@@ -344,12 +341,14 @@ fn copy_preset(state: State<AppState>, path: Vec<String>) -> Result<(), String> 
 /// 履歴のテキストの項目を、`path` の名前でプリセットに登録する。
 /// UIには省略したテキストしか渡していないので、全文は履歴から取る。
 #[tauri::command]
-fn add_preset_from_item(
-    state: State<AppState>,
-    id: u64,
-    path: Vec<String>,
-) -> Result<(), String> {
-    let text = match state.history.lock().unwrap().get(id).map(|item| &item.content) {
+fn add_preset_from_item(state: State<AppState>, id: u64, path: Vec<String>) -> Result<(), String> {
+    let text = match state
+        .history
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|item| &item.content)
+    {
         Some(Content::Text { text, .. }) => text.clone(),
         _ => return Err("文字の項目だけを登録できます".into()),
     };
@@ -370,8 +369,8 @@ fn remove_preset(state: State<AppState>, path: Vec<String>) -> Result<(), String
 #[tauri::command]
 fn open_presets_file(state: State<AppState>) -> Result<(), String> {
     let file = &state.paths().presets_file;
-    // なければ例を書いたファイルを作ってから開く。
-    presets::load(file)?;
+    // なければ例を書いたファイルを作ってから開く。壊れたファイルを直すためにも使うので、中身は読まない。
+    presets::ensure_exists(file)?;
     tauri_plugin_opener::open_path(file, None::<&str>).map_err(|e| e.to_string())
 }
 
@@ -518,7 +517,9 @@ fn setup(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let config = match config::load(&paths.config_file) {
         Ok(config) => config,
         Err(message) => {
-            notices.push(format!("設定を読めなかったので初期値で起動しました: {message}"));
+            notices.push(format!(
+                "設定を読めなかったので初期値で起動しました: {message}"
+            ));
             Config::default()
         }
     };

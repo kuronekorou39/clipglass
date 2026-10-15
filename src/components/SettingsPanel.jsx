@@ -1,4 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
+import { parseHistoryLimit } from "../settings.js";
 
 /** 履歴の件数、ディスク保存、ショートカット、自動起動などRust側が持つ設定。 */
 export function SettingsPanel({ config, onClose, onApply, onOpenPresets, onOpenDataDir }) {
@@ -11,11 +12,12 @@ export function SettingsPanel({ config, onClose, onApply, onOpenPresets, onOpenD
   }, [config]);
 
   const commitMaxItems = () => {
-    const value = parseInt(maxItems);
-    if (Number.isNaN(value)) {
+    const value = parseHistoryLimit(maxItems, config.historyMaxItemsLimit);
+    if (value === null) {
       setMaxItems(config.historyMaxItems);
       return;
     }
+    setMaxItems(value);
     if (value !== config.historyMaxItems) onApply("set_history_limit", { maxItems: value });
   };
 

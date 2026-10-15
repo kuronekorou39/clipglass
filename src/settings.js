@@ -35,3 +35,13 @@ export function stepFontSize(fontSize, steps) {
 export function saveSettings(storage, settings) {
   storage.setItem(STORAGE_KEY, JSON.stringify(settings));
 }
+
+/**
+ * 設定パネルで入力した履歴の件数を整数にして 1〜`limit` に収める。
+ * 数として読めない入力は null を返し、呼び出し側が元の値に戻す。
+ */
+export function parseHistoryLimit(value, limit) {
+  const number = parseInt(value, 10);
+  if (Number.isNaN(number)) return null;
+  return Math.min(limit, Math.max(1, number));
+}

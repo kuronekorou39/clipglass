@@ -20,6 +20,8 @@ const INDEX_FILE: &str = "index.json";
 const IMAGE_PREFIX: &str = "img-";
 const IMAGE_SUFFIX: &str = ".png";
 const THUMB_SUFFIX: &str = ".thumb.png";
+/// 読めなかった履歴フォルダーの退避先に付ける接尾辞。後ろに日時が付く。
+const BROKEN_SUFFIX: &str = ".broken-";
 
 #[derive(Serialize, Deserialize)]
 struct RichRecord {
@@ -124,13 +126,25 @@ impl Store {
     }
 
     /// 保存してある項目を履歴の末尾に足す。読めない項目は飛ばす。
+    ///
+    /// 一覧そのものが読めない場合は、次の保存で消してしまわないよう
+    /// フォルダーごと退避してから失敗を返す。
     pub fn load(&self, history: &mut History) -> Result<(), String> {
         let bytes = match fs::read(self.index_path()) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(e.to_string()),
         };
-        let records: Vec<Record> = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        let records: Vec<Record> = match serde_json::from_slice(&bytes) {
+            Ok(records) => records,
+            Err(e) => {
+                let backup = self.move_aside()?;
+                return Err(format!(
+                    "{e}(読めなかった履歴は {} に退避しました)",
+                    backup.display()
+                ));
+            }
+        };
         for record in records {
             let formats = record.formats.clone();
             let (pinned, updated_at) = (record.pinned, record.updated_at);
@@ -174,6 +188,21 @@ impl Store {
         Ok(())
     }
 
+    /// フォルダーを日時付きの名前に変えて退避する。
+    fn move_aside(&self) -> Result<PathBuf, String> {
+        let name = self
+            .dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("history");
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let backup = self
+            .dir
+            .with_file_name(format!("{name}{BROKEN_SUFFIX}{stamp}"));
+        fs::rename(&self.dir, &backup).map_err(|e| e.to_string())?;
+        Ok(backup)
+    }
+
     /// 保存してある履歴をすべて消す。
     pub fn clear(&self) -> Result<(), String> {
         match fs::remove_file(self.index_path()) {
@@ -209,7 +238,8 @@ mod tests {
     use super::*;
 
     fn temp_store(tag: &str) -> Store {
-        let dir = std::env::temp_dir().join(format!("clipglass-store-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("clipglass-store-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         Store::new(dir)
     }
@@ -313,6 +343,111 @@ mod tests {
         store.load(&mut loaded).unwrap();
         assert!(loaded.items().is_empty());
         fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn broken_index_is_moved_aside_instead_of_being_overwritten() {
+        let store = temp_store("broken");
+        store.save(&sample_history(), true).unwrap();
+        fs::write(store.index_path(), b"{not json").unwrap();
+
+        let mut loaded = History::default();
+        let error = store.load(&mut loaded).unwrap_err();
+        assert!(error.contains("退避"), "{error}");
+        assert!(loaded.items().is_empty());
+        assert!(!store.dir.exists());
+
+        // 退避先に元のファイルがそのまま残る
+        let parent = store.dir.parent().unwrap();
+        let prefix = format!(
+            "{}{BROKEN_SUFFIX}",
+            store.dir.file_name().unwrap().to_str().unwrap()
+        );
+        let backup = fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .expect("退避先がありません");
+        assert_eq!(fs::read(backup.join(INDEX_FILE)).unwrap(), b"{not json");
+        assert!(backup
+            .join(store.image_path(0xabc, false).file_name().unwrap())
+            .exists());
+
+        // 退避したあとは、何もなかったときと同じように保存できる
+        store.save(&sample_history(), true).unwrap();
+        let mut reloaded = History::default();
+        store.load(&mut reloaded).unwrap();
+        assert_eq!(reloaded.items().len(), 3);
+        fs::remove_dir_all(&store.dir).unwrap();
+        fs::remove_dir_all(&backup).unwrap();
+    }
+
+    #[test]
+    fn invalid_rich_data_is_dropped_but_text_survives() {
+        let store = temp_store("rich");
+        fs::create_dir_all(&store.dir).unwrap();
+        let json = r#"[{"text":"a","rich":[{"name":"HTML Format","data":"%%%"},{"name":"Rich Text Format","data":"b2s="}],"pinned":true}]"#;
+        fs::write(store.index_path(), json).unwrap();
+        let mut loaded = History::default();
+        store.load(&mut loaded).unwrap();
+        match &loaded.items()[0].content {
+            Content::Text { text, rich } => {
+                assert_eq!(text, "a");
+                assert_eq!(rich.len(), 1);
+                assert_eq!(rich[0].name, "Rich Text Format");
+                assert_eq!(rich[0].data, b"ok");
+            }
+            _ => panic!("テキストではありません"),
+        }
+        assert!(loaded.items()[0].pinned);
+        fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn records_without_content_are_skipped_and_order_is_kept() {
+        let store = temp_store("order");
+        fs::create_dir_all(&store.dir).unwrap();
+        let json = r#"[{"text":"first"},{"formats":["x"]},{"paths":["C:\\b"]},{"text":"last","updatedAt":5}]"#;
+        fs::write(store.index_path(), json).unwrap();
+        let mut loaded = History::default();
+        store.load(&mut loaded).unwrap();
+        assert_eq!(texts(&loaded), ["first", "C:\\b", "last"]);
+        assert_eq!(loaded.items()[2].updated_at, 5);
+        fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn turning_persistence_off_keeps_pinned_images_only() {
+        let store = temp_store("toggle");
+        let mut history = sample_history();
+        let image_id = history.items()[2].id;
+        history.set_pinned(image_id, true);
+        store.save(&history, true).unwrap();
+        store.save(&history, false).unwrap();
+
+        let mut loaded = History::default();
+        store.load(&mut loaded).unwrap();
+        assert_eq!(texts(&loaded), ["本文", "image:abc"]);
+        assert!(store.image_path(0xabc, true).exists());
+
+        history.set_pinned(image_id, false);
+        store.save(&history, false).unwrap();
+        assert!(!store.image_path(0xabc, false).exists());
+        fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn clear_on_missing_dir_is_not_an_error() {
+        let store = temp_store("nodir");
+        store.clear().unwrap();
+        let mut loaded = History::default();
+        store.load(&mut loaded).unwrap();
+        assert!(loaded.items().is_empty());
     }
 
     #[test]
