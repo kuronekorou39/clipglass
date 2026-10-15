@@ -29,6 +29,8 @@ use crate::AppState;
 pub const WM_COPY_ITEM: u32 = WM_APP + 1;
 /// 現在のクリップボードを読み直す要求。読み取りの再開時に使う。
 pub const WM_REFRESH: u32 = WM_APP + 2;
+/// `AppState::pending_text` の文字をクリップボードへ置く要求。プリセットのコピーに使う。
+pub const WM_COPY_TEXT: u32 = WM_APP + 3;
 pub const STATE_EVENT: &str = "clipboard-state";
 const READ_TIMER_ID: usize = 1;
 
@@ -130,7 +132,7 @@ fn refresh(app: &AppHandle, hwnd: HWND) {
             }
         }
     }
-    emit_state(app);
+    crate::history_changed(app);
 }
 
 /// 履歴の項目を書き戻す。成功すれば変更通知が届き、通常の経路で先頭へ移動する。
@@ -158,6 +160,18 @@ fn copy_item(app: &AppHandle, hwnd: HWND, id: u64, plain: bool) {
         }
     };
     if let Err(message) = result {
+        set_status(app, Status::Error { message });
+        emit_state(app);
+    }
+}
+
+/// プリセットの文字を書き戻す。成功すれば変更通知が届き、通常の経路で履歴に入る。
+fn copy_pending_text(app: &AppHandle, hwnd: HWND) {
+    let text = app.state::<AppState>().pending_text.lock().unwrap().take();
+    let Some(text) = text else {
+        return;
+    };
+    if let Err(message) = clipboard::write_text(hwnd, &text, &[]) {
         set_status(app, Status::Error { message });
         emit_state(app);
     }
@@ -193,6 +207,10 @@ unsafe extern "system" fn window_proc(
         }
         WM_COPY_ITEM => {
             copy_item(app, hwnd, wparam.0 as u64, lparam.0 != 0);
+            LRESULT(0)
+        }
+        WM_COPY_TEXT => {
+            copy_pending_text(app, hwnd);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),

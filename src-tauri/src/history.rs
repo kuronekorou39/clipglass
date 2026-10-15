@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::limits::{HISTORY_MAX_ITEMS, TEXT_PREVIEW_CHARS};
+use crate::limits::{DEFAULT_HISTORY_MAX_ITEMS, HISTORY_MAX_ITEMS_LIMIT, TEXT_PREVIEW_CHARS};
 
 /// テキストと一緒に保存する書式付きデータ(HTMLやRTF)。形式名と中身をそのまま持つ。
 pub struct RichFormat {
@@ -44,6 +44,8 @@ pub struct Item {
     /// 最後に取得した時点でクリップボードにあった形式名。
     pub formats: Vec<String>,
     pub updated_at: u64,
+    /// 固定した項目は件数の上限に数えず、捨てられない。
+    pub pinned: bool,
 }
 
 impl Item {
@@ -81,6 +83,7 @@ pub struct ItemView {
     formats: Vec<String>,
     /// 保存してある書式付きデータの形式名。再コピーで復元できるもの。
     stored_rich: Vec<String>,
+    pinned: bool,
     updated_at: u64,
 }
 
@@ -93,15 +96,50 @@ pub struct StateView {
     items: Vec<ItemView>,
 }
 
-#[derive(Default)]
 pub struct History {
     items: Vec<Item>,
     next_id: u64,
     current_id: Option<u64>,
     status: Option<Status>,
+    /// 固定していない項目の上限。
+    max_items: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            next_id: 0,
+            current_id: None,
+            status: None,
+            max_items: DEFAULT_HISTORY_MAX_ITEMS,
+        }
+    }
 }
 
 impl History {
+    pub fn items(&self) -> &[Item] {
+        &self.items
+    }
+
+    /// 固定していない項目の上限を変え、超えた分の古い項目を捨てる。
+    pub fn set_max_items(&mut self, max_items: usize) {
+        self.max_items = max_items.clamp(1, HISTORY_MAX_ITEMS_LIMIT);
+        self.enforce_limit();
+    }
+
+    fn enforce_limit(&mut self) {
+        let max_items = self.max_items;
+        let mut unpinned = 0;
+        self.items.retain(|item| {
+            if item.pinned {
+                return true;
+            }
+            unpinned += 1;
+            unpinned <= max_items
+        });
+    }
+
     /// 同じ内容の項目があれば先頭へ移動して `true` を返す。
     pub fn promote(&mut self, probe: &Probe, formats: &[String], now: u64) -> bool {
         let Some(index) = self.items.iter().position(|item| item.matches(probe)) else {
@@ -115,21 +153,38 @@ impl History {
         true
     }
 
-    /// 新しい項目を先頭に入れ、上限を超えた古い項目を捨てる。
-    pub fn insert(&mut self, content: Content, formats: Vec<String>, now: u64) {
+    fn new_item(&mut self, content: Content, formats: Vec<String>, updated_at: u64) -> Item {
         self.next_id += 1;
-        let id = self.next_id;
-        self.items.insert(
-            0,
-            Item {
-                id,
-                content,
-                formats,
-                updated_at: now,
-            },
-        );
-        self.items.truncate(HISTORY_MAX_ITEMS);
+        Item {
+            id: self.next_id,
+            content,
+            formats,
+            updated_at,
+            pinned: false,
+        }
+    }
+
+    /// 新しい項目を先頭に入れ、上限を超えた古い項目を捨てる。項目のIDを返す。
+    pub fn insert(&mut self, content: Content, formats: Vec<String>, now: u64) -> u64 {
+        let item = self.new_item(content, formats, now);
+        let id = item.id;
+        self.items.insert(0, item);
+        self.enforce_limit();
         self.mark_current(id);
+        id
+    }
+
+    /// ディスクから読み込んだ項目を末尾に足す。現在の項目にはしない。
+    pub fn append_loaded(
+        &mut self,
+        content: Content,
+        formats: Vec<String>,
+        pinned: bool,
+        updated_at: u64,
+    ) {
+        let mut item = self.new_item(content, formats, updated_at);
+        item.pinned = pinned;
+        self.items.push(item);
     }
 
     /// テキストを記録する。同じ文字列がすでにあれば先頭へ移動する。
@@ -153,6 +208,27 @@ impl History {
         if let Content::Text { rich: stored, .. } = &mut self.items[0].content {
             *stored = rich;
         }
+    }
+
+    /// 項目を削除する。現在の項目だった場合、どの行も先頭行の扱いにしない。
+    pub fn remove(&mut self, id: u64) -> bool {
+        let Some(index) = self.items.iter().position(|item| item.id == id) else {
+            return false;
+        };
+        self.items.remove(index);
+        if self.current_id == Some(id) {
+            self.current_id = None;
+        }
+        true
+    }
+
+    /// 固定を切り替える。固定を外しても、次に項目が増えるまでは捨てない。
+    pub fn set_pinned(&mut self, id: u64, pinned: bool) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
+            return false;
+        };
+        item.pinned = pinned;
+        true
     }
 
     /// クリップボードが履歴の項目と一致しなくなったことを記録する。
@@ -194,6 +270,7 @@ fn item_view(item: &Item) -> ItemView {
         paths: None,
         formats: item.formats.clone(),
         stored_rich: Vec::new(),
+        pinned: item.pinned,
         updated_at: item.updated_at,
     };
     match &item.content {
@@ -317,11 +394,77 @@ mod tests {
     #[test]
     fn oldest_item_is_dropped_over_the_limit() {
         let mut history = History::default();
-        for i in 0..=HISTORY_MAX_ITEMS {
+        for i in 0..=DEFAULT_HISTORY_MAX_ITEMS {
             add_text(&mut history, &i.to_string(), i as u64);
         }
-        assert_eq!(history.items.len(), HISTORY_MAX_ITEMS);
+        assert_eq!(history.items.len(), DEFAULT_HISTORY_MAX_ITEMS);
         assert!(!summary(&history).contains(&"0".to_string()));
+    }
+
+    #[test]
+    fn pinned_items_survive_the_limit_and_are_not_counted() {
+        let mut history = History::default();
+        history.set_max_items(2);
+        add_text(&mut history, "keep", 1);
+        let keep_id = history.items[0].id;
+        assert!(history.set_pinned(keep_id, true));
+        add_text(&mut history, "a", 2);
+        add_text(&mut history, "b", 3);
+        add_text(&mut history, "c", 4);
+        assert_eq!(summary(&history), ["c", "b", "keep"]);
+        assert!(history.view(false).items[2].pinned);
+
+        // 固定を外しても、その場では捨てない
+        assert!(history.set_pinned(keep_id, false));
+        assert_eq!(history.items.len(), 3);
+        add_text(&mut history, "d", 5);
+        assert_eq!(summary(&history), ["d", "c"]);
+        assert!(!history.set_pinned(999, true));
+    }
+
+    #[test]
+    fn lowering_the_limit_drops_old_unpinned_items() {
+        let mut history = History::default();
+        for i in 0..5 {
+            add_text(&mut history, &i.to_string(), i as u64);
+        }
+        let oldest = history.items[4].id;
+        history.set_pinned(oldest, true);
+        history.set_max_items(2);
+        assert_eq!(summary(&history), ["4", "3", "0"]);
+        history.set_max_items(0);
+        assert_eq!(summary(&history), ["4", "0"]);
+    }
+
+    #[test]
+    fn remove_clears_current_only_for_that_item() {
+        let mut history = History::default();
+        add_text(&mut history, "a", 1);
+        add_text(&mut history, "b", 2);
+        let id_of_a = history.items[1].id;
+        let id_of_b = history.items[0].id;
+        assert!(history.remove(id_of_a));
+        assert_eq!(history.current_id, Some(id_of_b));
+        assert!(history.remove(id_of_b));
+        assert_eq!(history.current_id, None);
+        assert!(!history.remove(id_of_b));
+        assert!(history.items.is_empty());
+    }
+
+    #[test]
+    fn loaded_items_go_to_the_end_without_becoming_current() {
+        let mut history = History::default();
+        history.append_loaded(Content::Files(vec!["x".into()]), Vec::new(), true, 7);
+        history.append_loaded(Content::Text { text: "t".into(), rich: Vec::new() }, Vec::new(), false, 8);
+        assert_eq!(summary(&history), ["x", "t"]);
+        assert_eq!(history.current_id, None);
+        assert!(history.items[0].pinned);
+        assert_ne!(history.items[0].id, history.items[1].id);
+
+        // 読み込んだテキストと同じものをコピーすると、新しい行は増えない
+        add_text(&mut history, "t", 9);
+        assert_eq!(summary(&history), ["t", "x"]);
+        assert_eq!(history.current_id, Some(history.items[0].id));
     }
 
     #[test]

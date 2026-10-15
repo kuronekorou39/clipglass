@@ -1,7 +1,9 @@
 //! 実装上の上限値と調整値。
 
-/// 履歴に保持する項目数。
-pub const HISTORY_MAX_ITEMS: usize = 10;
+/// 履歴に保持する項目数の初期値。固定した項目は数えない。
+pub const DEFAULT_HISTORY_MAX_ITEMS: usize = 10;
+/// 設定で選べる履歴の件数の上限。
+pub const HISTORY_MAX_ITEMS_LIMIT: usize = 200;
 /// 取り込む画像の最大画素数(32メガピクセル)。
 pub const MAX_IMAGE_PIXELS: u64 = 32_000_000;
 /// 取り込むテキストの最大サイズ(UTF-16でのバイト数)。

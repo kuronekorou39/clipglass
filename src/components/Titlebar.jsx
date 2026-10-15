@@ -18,6 +18,7 @@ export function Titlebar({
   onOpacityChange,
   onWrapToggle,
   onFontSizeStep,
+  onClose,
 }) {
   return (
     <div id="titlebar" data-tauri-drag-region>
@@ -87,8 +88,8 @@ export function Titlebar({
         </button>
         <button
           class="titlebar-btn btn-close"
-          title="終了"
-          onClick={() => getCurrentWindow().close()}
+          title="閉じる(通知領域に残ります。終了は通知領域のメニューから)"
+          onClick={onClose}
         >
           {"✕"}
         </button>

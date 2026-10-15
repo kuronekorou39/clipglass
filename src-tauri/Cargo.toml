@@ -1,6 +1,6 @@
 [package]
 name = "clipglass"
-version = "0.2.0"
+version = "0.3.0"
 description = "Clipglass - always-visible clipboard viewer"
 edition = "2021"
 
@@ -12,7 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
@@ -20,6 +20,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"
+serde_yaml_ng = "0.10"
+base64 = "0.22"
 
 [dependencies.windows]
 version = "0.62"
