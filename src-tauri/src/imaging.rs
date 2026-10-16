@@ -124,7 +124,7 @@ pub fn to_dib(image: &RgbaImage) -> Vec<u8> {
 
     if row_bytes > 0 {
         for row in image.as_raw().chunks_exact(row_bytes).rev() {
-            for rgba in row.chunks_exact(BYTES_PER_PIXEL) {
+            for rgba in row.as_chunks::<BYTES_PER_PIXEL>().0 {
                 dib.extend_from_slice(&[rgba[2], rgba[1], rgba[0], rgba[3]]);
             }
         }

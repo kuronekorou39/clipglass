@@ -147,8 +147,10 @@ unsafe fn read_text() -> Result<Option<String>, String> {
         return Ok(None);
     };
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|unit| *unit != 0)
         .collect();
     Ok(Some(String::from_utf16_lossy(&units)))
@@ -366,8 +368,10 @@ mod tests {
     fn drop_files_layout() {
         let bytes = build_drop_files(&["C:\\a".to_string(), "b".to_string()]);
         let units: Vec<u16> = bytes[20..]
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
             .collect();
         assert_eq!(u32::from_le_bytes(bytes[..4].try_into().unwrap()), 20);
         assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 1);
