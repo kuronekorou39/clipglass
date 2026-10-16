@@ -1,5 +1,6 @@
 mod clipboard;
 mod config;
+mod drag;
 mod history;
 mod imaging;
 mod limits;
@@ -30,7 +31,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use config::Config;
 use history::{Content, History, StateView};
-use placement::{Corner, Rect};
+use placement::{Corner, DragKind, Rect};
 use presets::NodeView;
 use store::Store;
 
@@ -271,6 +272,17 @@ fn apply_rect(window: &WebviewWindow, rect: Rect) -> Result<(), String> {
     window
         .set_position(tauri::PhysicalPosition::new(rect.x as i32, rect.y as i32))
         .map_err(|e| e.to_string())
+}
+
+/// タイトルバーや縁を押したときに、ボタンを離すまでの移動かサイズ変更を始める。
+/// `kind` は `"move"` か、辺と隅の方角(`"n"`、`"se"` など)。
+#[tauri::command]
+fn begin_window_drag(window: WebviewWindow, kind: String) -> Result<(), String> {
+    let kind = DragKind::parse(&kind).ok_or("ドラッグの種類が不正です")?;
+    let current = placement(&window)?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    drag::start(hwnd, current.rect, kind, current.min);
+    Ok(())
 }
 
 /// 位置と大きさを論理ピクセルで少しずつ変える。キーボード操作で使う。
@@ -722,6 +734,7 @@ pub fn run() {
             set_pinned,
             show_window,
             hide_window,
+            begin_window_drag,
             nudge_window,
             snap_window,
             reset_window_size,

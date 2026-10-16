@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { onDragRegionMouseDown } from "../windowDrag.js";
 import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
@@ -21,8 +22,8 @@ export function Titlebar({
   onClose,
 }) {
   return (
-    <div id="titlebar" data-tauri-drag-region>
-      <span class="titlebar-title" data-tauri-drag-region>
+    <div id="titlebar" data-drag-region onMouseDown={onDragRegionMouseDown}>
+      <span class="titlebar-title" data-drag-region>
         Clipglass
       </span>
       <div class="titlebar-buttons">

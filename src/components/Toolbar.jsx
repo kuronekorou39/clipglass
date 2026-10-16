@@ -1,4 +1,5 @@
 import { KINDS, toggleKind } from "../search.js";
+import { onDragRegionMouseDown } from "../windowDrag.js";
 
 /** 履歴とプリセットの切り替え、検索、種類の絞り込み、設定を開くボタン。 */
 export function Toolbar({
@@ -12,7 +13,7 @@ export function Toolbar({
   searchRef,
 }) {
   return (
-    <div id="toolbar" data-tauri-drag-region>
+    <div id="toolbar" data-drag-region onMouseDown={onDragRegionMouseDown}>
       <div class="tabs" role="tablist">
         <button
           class={`tab${view === "history" ? " active" : ""}`}
