@@ -53,6 +53,7 @@
 npm install
 npm run tauri dev           # 開発モードで起動
 npm run tauri build         # インストーラーを作成
+.\scripts\build_exe.ps1     # exe・zip・インストーラーを release\ にまとめる(PowerShell)
 npm test                    # フロントエンドのテスト
 cd src-tauri && cargo test  # Rust のテスト
 ```
