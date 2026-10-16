@@ -9,14 +9,14 @@ import {
   saveSettings,
   stepFontSize,
 } from "../settings.js";
-import { KINDS, filterItems, filterPresets, folderPaths } from "../search.js";
+import { KINDS, filterItems, filterPresets } from "../search.js";
 import { Titlebar } from "./Titlebar.jsx";
 import { FilterBar } from "./FilterBar.jsx";
 import { Footer } from "./Footer.jsx";
 import { StatusRow } from "./StatusRow.jsx";
 import { HistoryItem } from "./HistoryItem.jsx";
 import { PresetPopover } from "./PresetPopover.jsx";
-import { RegisterPresetForm } from "./RegisterPresetForm.jsx";
+import { ItemMenu } from "./ItemMenu.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 import { ResizeHandles } from "./ResizeHandles.jsx";
 import { windowKeyAction } from "../windowKeys.js";
@@ -41,7 +41,7 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [presets, setPresets] = useState([]);
   const [presetsError, setPresetsError] = useState(null);
-  const [registering, setRegistering] = useState(null);
+  const [menu, setMenu] = useState(null);
   const toastTimer = useRef(null);
   const searchRef = useRef(null);
 
@@ -148,7 +148,7 @@ export function App() {
       }
       if (e.key === "Escape") {
         setSettingsOpen(false);
-        setRegistering(null);
+        setMenu(null);
         setPresetsOpen(false);
         if (document.activeElement === searchRef.current) closeFilter();
         return;
@@ -240,12 +240,25 @@ export function App() {
     }
   }, []);
 
-  const handleRegisterSubmit = async (path) => {
-    const ok = await runOrToast(
-      () => invoke("add_preset_from_item", { id: registering.id, path }),
-      `「${path.join(" / ")}」に登録しました`,
-    );
-    if (ok) setRegistering(null);
+  /** コマンドを呼び、失敗は通知にする。戻り値も使えるよう `{ ok, value }` で返す。 */
+  const call = useCallback(async (command, args, successMessage) => {
+    try {
+      const value = await invoke(command, args);
+      if (successMessage) showToast(successMessage);
+      return { ok: true, value };
+    } catch (error) {
+      showToast(String(error), true);
+      return { ok: false };
+    }
+  }, []);
+
+  /** 押すだけで、プリセットの先頭に登録する。名前は1行目から作り、あとで編集できる。 */
+  const handleRegister = async (item) => {
+    const result = await call("add_preset_from_item", { id: item.id });
+    if (result.ok) {
+      showToast(`「${result.value}」をプリセットに登録しました`);
+      if (presetsOpen) loadPresets();
+    }
   };
 
   const { paused, status, currentId, items } = clipboard;
@@ -258,14 +271,10 @@ export function App() {
       <Titlebar
         pinned={settings.pinned}
         opacity={settings.opacity}
-        wrap={settings.wrap}
-        fontSize={settings.fontSize}
         paused={paused}
         onPauseToggle={() => invoke("set_paused", { paused: !paused })}
-        onFontSizeStep={handleFontSizeStep}
         onPinToggle={handlePinToggle}
         onOpacityChange={(opacity) => applyOpacity({ opacity })}
-        onWrapToggle={() => updateSettings({ wrap: !settings.wrap })}
         onClose={() => invoke("hide_window")}
       />
       {filterOpen && (
@@ -294,12 +303,8 @@ export function App() {
             saving={saving}
             onCopy={(plain) => invoke("copy_item", { id: item.id, plain })}
             onSave={() => handleSave(item.id)}
-            onPin={(pinned) => invoke("set_item_pinned", { id: item.id, pinned })}
-            onRegister={() => {
-              loadPresets();
-              setRegistering(item);
-            }}
-            onRemove={() => invoke("remove_item", { id: item.id })}
+            onRegister={() => handleRegister(item)}
+            onMenu={(position) => setMenu({ item, ...position })}
           />
         ))}
         {items.length === 0 && !status && !paused && (
@@ -325,37 +330,34 @@ export function App() {
           query={presetQuery}
           onQueryChange={setPresetQuery}
           onCopy={async (path) => {
-            const ok = await runOrToast(
-              () => invoke("copy_preset", { path }),
-              `「${path.at(-1)}」をコピーしました`,
-            );
-            if (ok) setPresetsOpen(false);
+            const result = await call("copy_preset", { path }, `「${path.at(-1)}」をコピーしました`);
+            if (result.ok) setPresetsOpen(false);
           }}
-          onRemove={async (path) => {
-            await runOrToast(() => invoke("remove_preset", { path }), "削除しました");
-            loadPresets();
-          }}
-          onOpenFile={() => runOrToast(() => invoke("open_presets_file"))}
+          call={call}
           onReload={loadPresets}
+          onOpenFile={() => runOrToast(() => invoke("open_presets_file"))}
           onClose={() => setPresetsOpen(false)}
         />
       )}
-      {registering && (
-        <RegisterPresetForm
-          item={registering}
-          folders={folderPaths(presets)}
-          onSubmit={handleRegisterSubmit}
-          onCancel={() => setRegistering(null)}
+      {menu && (
+        <ItemMenu
+          item={menu.item}
+          x={menu.x}
+          y={menu.y}
+          onPin={(pinned) => call("set_item_pinned", { id: menu.item.id, pinned })}
+          onRemove={() => call("remove_item", { id: menu.item.id })}
+          onClose={() => setMenu(null)}
         />
       )}
       {settingsOpen && config && (
         <SettingsPanel
           config={config}
-          transparency={settings.transparency}
+          settings={settings}
           onTransparencyChange={(transparency) => applyOpacity({ transparency })}
+          onFontSizeStep={handleFontSizeStep}
+          onWrapChange={(wrap) => updateSettings({ wrap })}
           onClose={() => setSettingsOpen(false)}
           onApply={applyConfig}
-          onOpenPresets={() => runOrToast(() => invoke("open_presets_file"))}
           onOpenDataDir={() => runOrToast(() => invoke("open_data_dir"))}
           onSnap={(corner) => runOrToast(() => invoke("snap_window", { corner }))}
           onResetSize={() => runOrToast(() => invoke("reset_window_size"))}

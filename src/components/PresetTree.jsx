@@ -1,65 +1,35 @@
-import { useState } from "preact/hooks";
 import { countLeaves, firstLine } from "../search.js";
 
-const pathKey = (path) => path.join("\u0000");
-
-function DeleteControl({ node, confirming, onConfirmRequest, onRemove }) {
-  const isFolder = Boolean(node.children);
-  if (confirming) {
-    return (
-      <span class="confirm" onClick={(e) => e.stopPropagation()}>
-        <button class="row-btn danger" onClick={() => onRemove(node.path)}>
-          {isFolder ? "中身ごと削除" : "削除"}
-        </button>
-        <button class="row-btn" onClick={() => onConfirmRequest(null)}>
-          取消
-        </button>
-      </span>
-    );
-  }
+function EditButton({ node, onEdit }) {
   return (
     <button
       class="icon-btn"
-      title={isFolder ? "このフォルダーを中身ごと削除" : "このプリセットを削除"}
-      aria-label="削除"
+      title={node.children ? "フォルダーを編集" : "プリセットを編集"}
+      aria-label="編集"
       onClick={(e) => {
+        // フォルダーの開閉やコピーにならないようにする
+        e.preventDefault();
         e.stopPropagation();
-        onConfirmRequest(pathKey(node.path));
+        onEdit(node);
       }}
     >
-      {"✕"}
+      {"✎"}
     </button>
   );
 }
 
-function PresetNode({ node, confirmKey, onConfirmRequest, onCopy, onRemove }) {
-  const confirming = confirmKey === pathKey(node.path);
-  const control = (
-    <DeleteControl
-      node={node}
-      confirming={confirming}
-      onConfirmRequest={onConfirmRequest}
-      onRemove={onRemove}
-    />
-  );
+function PresetNode({ node, onCopy, onEdit }) {
   if (node.children) {
     return (
       <details class="preset-folder" open>
         <summary>
           <span class="preset-name">{node.name}</span>
           <span class="preset-count">{countLeaves(node.children)}件</span>
-          {control}
+          <EditButton node={node} onEdit={onEdit} />
         </summary>
         <div class="preset-children">
           {node.children.map((child) => (
-            <PresetNode
-              key={child.name}
-              node={child}
-              confirmKey={confirmKey}
-              onConfirmRequest={onConfirmRequest}
-              onCopy={onCopy}
-              onRemove={onRemove}
-            />
+            <PresetNode key={child.name} node={child} onCopy={onCopy} onEdit={onEdit} />
           ))}
           {node.children.length === 0 && <div class="preset-empty">空のフォルダー</div>}
         </div>
@@ -83,29 +53,17 @@ function PresetNode({ node, confirmKey, onConfirmRequest, onCopy, onRemove }) {
     >
       <span class="preset-name">{node.name}</span>
       <span class="preset-text">{firstLine(node.text)}</span>
-      {control}
+      <EditButton node={node} onEdit={onEdit} />
     </div>
   );
 }
 
-/** プリセットの木。フォルダーは折りたため、プリセットはクリックでコピーする。 */
-export function PresetTree({ nodes, onCopy, onRemove }) {
-  const [confirmKey, setConfirmKey] = useState(null);
-  const remove = (path) => {
-    setConfirmKey(null);
-    onRemove(path);
-  };
+/** プリセットの木。フォルダーは折りたため、プリセットはクリックでコピーする。✎ で編集する。 */
+export function PresetTree({ nodes, onCopy, onEdit }) {
   return (
     <div class="preset-tree">
       {nodes.map((node) => (
-        <PresetNode
-          key={node.name}
-          node={node}
-          confirmKey={confirmKey}
-          onConfirmRequest={setConfirmKey}
-          onCopy={onCopy}
-          onRemove={remove}
-        />
+        <PresetNode key={node.name} node={node} onCopy={onCopy} onEdit={onEdit} />
       ))}
     </div>
   );

@@ -49,7 +49,7 @@ export function parseHistoryLimit(value, limit) {
 
 /** 透過のしかた。背景だけを透かして文字をくっきり残すか、ウィンドウ全体を透かすか。 */
 export const TRANSPARENCY_MODES = [
-  ["background", "背景だけ(文字はくっきり)"],
+  ["background", "背景だけ"],
   ["window", "ウィンドウ全体"],
 ];
 

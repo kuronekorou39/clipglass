@@ -181,8 +181,9 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `path` の最後を名前として登録する。途中のフォルダーがなければ作る。
+/// `path` の最後を名前として登録する。途中のフォルダーがなければ作る。テストの下ごしらえに使う。
 /// 同じ名前のプリセットやフォルダーがある場合は登録しない。
+#[cfg(test)]
 pub fn insert(root: &mut Root, path: &[String], text: String) -> Result<(), String> {
     let Some((name, folders)) = path.split_last() else {
         return Err("名前を入力してください".to_string());
@@ -231,6 +232,133 @@ pub fn remove(root: &mut Root, path: &[String]) -> Result<(), String> {
         .position(|(n, _)| n == name)
         .ok_or_else(|| format!("{}が見つかりません", location(path)))?;
     current.remove(index);
+    Ok(())
+}
+
+/// 履歴から登録するときの名前の上限(文字数)。長い文は先頭だけを名前にする。
+const DEFAULT_NAME_CHARS: usize = 20;
+
+/// 文字から名前を作る。最初の空でない行の先頭を使い、なければ「プリセット」。
+pub fn default_name(text: &str) -> String {
+    let line = text.lines().map(str::trim).find(|line| !line.is_empty());
+    match line {
+        Some(line) => line
+            .chars()
+            .take(DEFAULT_NAME_CHARS)
+            .collect::<String>()
+            .trim()
+            .to_string(),
+        None => "プリセット".to_string(),
+    }
+}
+
+/// 兄弟と重ならない名前。重なるときは「名前 (2)」「名前 (3)」と番号を付ける。
+pub fn unique_name(siblings: &Root, base: &str) -> String {
+    let taken = |name: &str| siblings.iter().any(|(n, _)| n == name);
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base} ({n})"))
+        .find(|name| !taken(name))
+        .expect("番号は尽きない")
+}
+
+/// `path` のフォルダーの中身。空の `path` は先頭。
+fn folder_mut<'a>(root: &'a mut Root, path: &[String]) -> Result<&'a mut Root, String> {
+    let mut current = root;
+    for folder in path {
+        current = match current.iter_mut().find(|(n, _)| n == folder) {
+            Some((_, Node::Folder(children))) => children,
+            _ => return Err(format!("フォルダー{}が見つかりません", location(path))),
+        };
+    }
+    Ok(current)
+}
+
+fn split_parent(path: &[String]) -> Result<(&String, &[String]), String> {
+    path.split_last()
+        .ok_or_else(|| "項目が指定されていません".to_string())
+}
+
+fn joined(folder: &[String], name: String) -> Vec<String> {
+    folder.iter().cloned().chain([name]).collect()
+}
+
+/// フォルダー `folder` の末尾に、重ならない名前で加える。加えた項目の `path` を返す。
+pub fn add_unique(
+    root: &mut Root,
+    folder: &[String],
+    name: &str,
+    node: Node,
+) -> Result<Vec<String>, String> {
+    validate_name(name)?;
+    let children = folder_mut(root, folder)?;
+    let name = unique_name(children, name);
+    children.push((name.clone(), node));
+    Ok(joined(folder, name))
+}
+
+/// 名前を変え、プリセットなら文字も書き換える。変えたあとの `path` を返す。
+pub fn update(
+    root: &mut Root,
+    path: &[String],
+    new_name: &str,
+    text: Option<String>,
+) -> Result<Vec<String>, String> {
+    validate_name(new_name)?;
+    let (name, parent) = split_parent(path)?;
+    let siblings = folder_mut(root, parent)?;
+    if new_name != name && siblings.iter().any(|(n, _)| n == new_name) {
+        return Err(format!("「{new_name}」は同じフォルダーにあります"));
+    }
+    let entry = siblings
+        .iter_mut()
+        .find(|(n, _)| n == name)
+        .ok_or_else(|| format!("{}が見つかりません", location(path)))?;
+    match (&mut entry.1, text) {
+        (Node::Text(current), Some(text)) => *current = text,
+        (Node::Folder(_), Some(_)) => return Err("フォルダーには文字を書けません".to_string()),
+        (_, None) => {}
+    }
+    entry.0 = new_name.to_string();
+    Ok(joined(parent, new_name.to_string()))
+}
+
+/// 別のフォルダーの末尾へ移す。名前が重なるときは番号を付ける。移したあとの `path` を返す。
+pub fn move_to(root: &mut Root, path: &[String], folder: &[String]) -> Result<Vec<String>, String> {
+    let (name, parent) = split_parent(path)?;
+    if parent == folder {
+        return Ok(path.to_vec());
+    }
+    if folder.starts_with(path) {
+        return Err("フォルダーをその中へは移せません".to_string());
+    }
+    // 移し先がないときに項目だけ消えないよう、先に確かめる
+    folder_mut(root, folder)?;
+    let node = find(root, path)
+        .cloned()
+        .ok_or_else(|| format!("{}が見つかりません", location(path)))?;
+    let name = name.clone();
+    remove(root, path)?;
+    let children = folder_mut(root, folder)?;
+    let name = unique_name(children, &name);
+    children.push((name.clone(), node));
+    Ok(joined(folder, name))
+}
+
+/// 同じフォルダーの中で、並びを `offset` だけ動かす(負で上へ)。端では止める。
+pub fn reorder(root: &mut Root, path: &[String], offset: i64) -> Result<(), String> {
+    let (name, parent) = split_parent(path)?;
+    let siblings = folder_mut(root, parent)?;
+    let index = siblings
+        .iter()
+        .position(|(n, _)| n == name)
+        .ok_or_else(|| format!("{}が見つかりません", location(path)))?;
+    let last = siblings.len() as i64 - 1;
+    let target = (index as i64 + offset).clamp(0, last) as usize;
+    let entry = siblings.remove(index);
+    siblings.insert(target, entry);
     Ok(())
 }
 
@@ -482,5 +610,101 @@ mod tests {
         save(&file, &Vec::new()).unwrap();
         assert!(load(&file).unwrap().is_empty());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn default_name_uses_first_non_empty_line() {
+        assert_eq!(
+            default_name("\n  おはようございます  \n二行目"),
+            "おはようございます"
+        );
+        assert_eq!(
+            default_name("あいうえおかきくけこさしすせそたちつてとなにぬねの"),
+            "あいうえおかきくけこさしすせそたちつてと"
+        );
+        assert_eq!(default_name("   \n "), "プリセット");
+    }
+
+    #[test]
+    fn add_unique_numbers_duplicate_names() {
+        let mut root = parse("朝: a\n朝 (2): b\n挨拶:\n  夜: c\n").unwrap();
+        assert_eq!(
+            add_unique(&mut root, &[], "朝", Node::Text(s("x"))).unwrap(),
+            path(&["朝 (3)"])
+        );
+        assert_eq!(
+            add_unique(&mut root, &[], "昼", Node::Text(s("y"))).unwrap(),
+            path(&["昼"])
+        );
+        assert_eq!(
+            add_unique(&mut root, &path(&["挨拶"]), "夜", Node::Folder(Vec::new())).unwrap(),
+            path(&["挨拶", "夜 (2)"])
+        );
+        assert!(add_unique(&mut root, &path(&["ない"]), "a", Node::Text(s("a"))).is_err());
+        assert!(add_unique(&mut root, &[], " ", Node::Text(s("a"))).is_err());
+        // 追加は末尾に並ぶ
+        assert_eq!(root.last().unwrap().0, "昼");
+    }
+
+    #[test]
+    fn update_renames_and_rewrites_text() {
+        let mut root = parse("挨拶:\n  朝: a\n  夜: b\n").unwrap();
+        let renamed = update(
+            &mut root,
+            &path(&["挨拶", "朝"]),
+            "おはよう",
+            Some(s("新しい\n文")),
+        )
+        .unwrap();
+        assert_eq!(renamed, path(&["挨拶", "おはよう"]));
+        assert_eq!(find_text(&root, &renamed), Some("新しい\n文"));
+        // 並びは変えない
+        assert_eq!(
+            view(&root)[0].children.as_ref().unwrap()[0].name,
+            "おはよう"
+        );
+        // 同じフォルダーの別の名前とは重ねられない。自分と同じ名前はよい
+        assert!(update(&mut root, &renamed, "夜", None).is_err());
+        assert!(update(&mut root, &renamed, "おはよう", Some(s("x"))).is_ok());
+        // フォルダーの名前も変えられるが、文字は書けない
+        assert_eq!(
+            update(&mut root, &path(&["挨拶"]), "あいさつ", None).unwrap(),
+            path(&["あいさつ"])
+        );
+        assert!(update(&mut root, &path(&["あいさつ"]), "あいさつ", Some(s("x"))).is_err());
+        assert!(update(&mut root, &path(&["ない"]), "a", None).is_err());
+    }
+
+    #[test]
+    fn move_to_another_folder_keeps_content() {
+        let mut root = parse("朝: a\n挨拶:\n  朝: b\n  中:\n    x: y\n").unwrap();
+        let moved = move_to(&mut root, &path(&["朝"]), &path(&["挨拶"])).unwrap();
+        assert_eq!(moved, path(&["挨拶", "朝 (2)"]));
+        assert_eq!(find_text(&root, &moved), Some("a"));
+        assert!(find(&root, &path(&["朝"])).is_none());
+        // 先頭へ戻す
+        assert_eq!(move_to(&mut root, &moved, &[]).unwrap(), path(&["朝 (2)"]));
+        // 同じフォルダーなら何もしない
+        assert_eq!(
+            move_to(&mut root, &path(&["朝 (2)"]), &[]).unwrap(),
+            path(&["朝 (2)"])
+        );
+        // フォルダーを自分の中へは移せない。移し先がなければ消さない
+        assert!(move_to(&mut root, &path(&["挨拶"]), &path(&["挨拶", "中"])).is_err());
+        assert!(move_to(&mut root, &path(&["朝 (2)"]), &path(&["ない"])).is_err());
+        assert!(find(&root, &path(&["朝 (2)"])).is_some());
+    }
+
+    #[test]
+    fn reorder_moves_within_folder_and_stops_at_ends() {
+        let mut root = parse("a: 1\nb: 2\nc: 3\n").unwrap();
+        let names = |root: &Root| root.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        reorder(&mut root, &path(&["c"]), -1).unwrap();
+        assert_eq!(names(&root), ["a", "c", "b"]);
+        reorder(&mut root, &path(&["a"]), -1).unwrap();
+        assert_eq!(names(&root), ["a", "c", "b"]);
+        reorder(&mut root, &path(&["a"]), 10).unwrap();
+        assert_eq!(names(&root), ["c", "b", "a"]);
+        assert!(reorder(&mut root, &path(&["ない"]), 1).is_err());
     }
 }

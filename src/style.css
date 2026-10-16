@@ -134,14 +134,6 @@ button {
   cursor: default;
 }
 
-.titlebar-btn.font-smaller {
-  font-size: 10px;
-}
-
-.titlebar-btn.font-larger {
-  font-size: 15px;
-}
-
 .titlebar-btn.active {
   color: var(--accent);
 }
@@ -281,20 +273,37 @@ button {
   color: var(--text-secondary);
 }
 
-.item-time {
-  margin-left: auto;
+/* 大きさ・時刻・書式・形式。ふだんは畳んでおく */
+.item-data {
   color: var(--text-dim);
 }
 
-.item-actions {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.75em;
+.item-data summary {
+  cursor: pointer;
+  width: fit-content;
 }
 
-/* 形式の一覧が左、ボタンが右 */
-.item-actions .format-list {
-  margin-right: auto;
+.item-data summary:hover {
+  color: var(--text-secondary);
+}
+
+.item-data dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2em 0.8em;
+  margin-top: 0.3em;
+  padding-left: 1em;
+  color: var(--text-secondary);
+  user-select: text;
+}
+
+.item-data dt {
+  color: var(--text-dim);
+}
+
+.format-names {
+  font-family: var(--font-mono);
+  white-space: pre-line;
 }
 
 /* === Preview of the current item === */
@@ -463,8 +472,9 @@ button {
   gap: 0.4em;
 }
 
-.item-actions .item-tools {
+.item-meta .item-tools {
   margin-left: auto;
+  align-self: flex-start;
 }
 
 .row-btn.active {
@@ -762,32 +772,6 @@ button {
   width: 7em;
 }
 
-.hint {
-  color: var(--text-dim);
-  font-size: 0.85em;
-}
-
-.data-dir {
-  font-family: var(--font-mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  user-select: text;
-}
-
-.register-preview {
-  max-height: 6em;
-  overflow: auto;
-  padding: 0.5em;
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-family: var(--font-mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--text-bright);
-}
-
 /* === Resize handles === */
 /* OSの縁は数ピクセルしかないので、広めの透明な帯でサイズ変更を受ける。
    上辺と上の角はタイトルバーのボタンに重ならないよう、余白の幅に収める。
@@ -878,8 +862,168 @@ button {
   );
 }
 
-.field-row.wrap {
+/* === Settings tabs === */
+.panel-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-tabs button,
+.segmented button {
+  padding: 0.3em 0.8em;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.panel-tabs button {
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.panel-tabs button.active {
+  border-bottom-color: var(--accent);
+  color: var(--text-bright);
+}
+
+.panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9em;
+  min-height: 9em;
+}
+
+.segmented {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.segmented button.active {
+  background: var(--bg-solid-input);
+  color: var(--accent);
+}
+
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+}
+
+.stepper-value {
+  min-width: 3.5em;
+  text-align: center;
+  color: var(--text-bright);
+}
+
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+}
+
+.align-start {
+  align-self: flex-start;
+}
+
+/* 画面の隅を、画面での並びどおり 2 × 2 に置く */
+.corner-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 5em);
+  gap: 0.4em;
+}
+
+/* === Item menu === */
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+
+.menu {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  min-width: 10em;
+  padding: 3px;
+  background: var(--bg-solid);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.6);
+  font-size: 12px;
+}
+
+.menu-item {
+  padding: 0.4em 0.8em;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.menu-item:hover {
+  background: var(--bg-hover);
+}
+
+.menu-item.danger:hover {
+  color: var(--red);
+}
+
+/* === Preset editor === */
+.preset-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding: 0.6em;
+  overflow-y: auto;
+  font-size: 12px;
+}
+
+.editor-title {
+  font-weight: 600;
+  color: var(--text-bright);
+}
+
+.preset-editor input,
+.preset-editor textarea,
+.preset-editor select {
+  padding: 0.3em 0.5em;
+  background: var(--bg-solid-input);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.preset-editor textarea {
+  resize: vertical;
+  min-height: 5em;
+  font-family: var(--font-mono);
+  user-select: text;
+}
+
+.editor-actions {
+  display: flex;
   flex-wrap: wrap;
+  gap: 0.4em;
+}
+
+.editor-side {
+  display: flex;
+  gap: 0.4em;
+  margin-left: auto;
+}
+
+.push-right {
+  margin-left: auto;
 }
 
 /* === List animation === */

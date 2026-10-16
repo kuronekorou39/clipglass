@@ -476,10 +476,22 @@ fn copy_preset(state: State<AppState>, path: Vec<String>) -> Result<(), String> 
     post_to_watcher(&state, watcher::WM_COPY_TEXT, 0, 0)
 }
 
-/// 履歴のテキストの項目を、`path` の名前でプリセットに登録する。
-/// UIには省略したテキストしか渡していないので、全文は履歴から取る。
+/// プリセットのファイルを読み、書き換えて保存する。読めないファイルは書き直さない。
+fn edit_presets<T>(
+    state: &AppState,
+    change: impl FnOnce(&mut presets::Root) -> Result<T, String>,
+) -> Result<T, String> {
+    let file = &state.paths().presets_file;
+    let mut root = presets::load(file)?;
+    let result = change(&mut root)?;
+    presets::save(file, &root)?;
+    Ok(result)
+}
+
+/// 履歴のテキストの項目を、先頭にそのまま登録する。名前は1行目から作り、重なれば番号を付ける。
+/// UIには省略したテキストしか渡していないので、全文は履歴から取る。登録した名前を返す。
 #[tauri::command]
-fn add_preset_from_item(state: State<AppState>, id: u64, path: Vec<String>) -> Result<(), String> {
+fn add_preset_from_item(state: State<AppState>, id: u64) -> Result<String, String> {
     let text = match state
         .history
         .lock()
@@ -490,18 +502,68 @@ fn add_preset_from_item(state: State<AppState>, id: u64, path: Vec<String>) -> R
         Some(Content::Text { text, .. }) => text.clone(),
         _ => return Err("文字の項目だけを登録できます".into()),
     };
-    let file = &state.paths().presets_file;
-    let mut root = presets::load(file)?;
-    presets::insert(&mut root, &path, text)?;
-    presets::save(file, &root)
+    let name = presets::default_name(&text);
+    let path = edit_presets(&state, |root| {
+        presets::add_unique(root, &[], &name, presets::Node::Text(text))
+    })?;
+    Ok(path.last().cloned().unwrap_or_default())
+}
+
+/// `folder` の中にプリセットを作る。作った項目の `path` を返す。
+#[tauri::command]
+fn create_preset(
+    state: State<AppState>,
+    folder: Vec<String>,
+    name: String,
+    text: String,
+) -> Result<Vec<String>, String> {
+    edit_presets(&state, |root| {
+        presets::add_unique(root, &folder, &name, presets::Node::Text(text))
+    })
+}
+
+/// `folder` の中に空のフォルダーを作る。
+#[tauri::command]
+fn create_preset_folder(
+    state: State<AppState>,
+    folder: Vec<String>,
+    name: String,
+) -> Result<Vec<String>, String> {
+    edit_presets(&state, |root| {
+        presets::add_unique(root, &folder, &name, presets::Node::Folder(Vec::new()))
+    })
+}
+
+/// 名前と文字(プリセットのとき)を書き換える。
+#[tauri::command]
+fn update_preset(
+    state: State<AppState>,
+    path: Vec<String>,
+    name: String,
+    text: Option<String>,
+) -> Result<Vec<String>, String> {
+    edit_presets(&state, |root| presets::update(root, &path, &name, text))
+}
+
+/// 別のフォルダーへ移す。
+#[tauri::command]
+fn move_preset(
+    state: State<AppState>,
+    path: Vec<String>,
+    folder: Vec<String>,
+) -> Result<Vec<String>, String> {
+    edit_presets(&state, |root| presets::move_to(root, &path, &folder))
+}
+
+/// 同じフォルダーの中で並びを動かす(負で上へ)。
+#[tauri::command]
+fn reorder_preset(state: State<AppState>, path: Vec<String>, offset: i64) -> Result<(), String> {
+    edit_presets(&state, |root| presets::reorder(root, &path, offset))
 }
 
 #[tauri::command]
 fn remove_preset(state: State<AppState>, path: Vec<String>) -> Result<(), String> {
-    let file = &state.paths().presets_file;
-    let mut root = presets::load(file)?;
-    presets::remove(&mut root, &path)?;
-    presets::save(file, &root)
+    edit_presets(&state, |root| presets::remove(root, &path))
 }
 
 #[tauri::command]
@@ -747,6 +809,11 @@ pub fn run() {
             get_presets,
             copy_preset,
             add_preset_from_item,
+            create_preset,
+            create_preset_folder,
+            update_preset,
+            move_preset,
+            reorder_preset,
             remove_preset,
             open_presets_file,
             open_data_dir,
