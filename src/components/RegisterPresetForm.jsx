@@ -15,9 +15,8 @@ export function RegisterPresetForm({ item, folders, onSubmit, onCancel }) {
 
   const submit = (e) => {
     e.preventDefault();
-    const parent = folder === ROOT ? [] : folder.split("\u0000");
-    const created = newFolder.trim() ? [newFolder.trim()] : [];
-    onSubmit([...parent, ...created, name.trim()]);
+    const path = buildPresetPath({ folderKey: folder, newFolder, name });
+    if (path) onSubmit(path);
   };
 
   return (
@@ -44,9 +43,9 @@ export function RegisterPresetForm({ item, folders, onSubmit, onCancel }) {
         <label class="field">
           <span>フォルダー</span>
           <select value={folder} onChange={(e) => setFolder(e.target.value)}>
-            <option value={ROOT}>(先頭)</option>
+            <option value={ROOT_FOLDER_KEY}>(先頭)</option>
             {folders.map((path) => (
-              <option key={path.join("\u0000")} value={path.join("\u0000")}>
+              <option key={folderKey(path)} value={folderKey(path)}>
                 {path.join(" / ")}
               </option>
             ))}

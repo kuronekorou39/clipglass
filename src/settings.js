@@ -14,6 +14,7 @@ export const DEFAULT_SETTINGS = {
   fontSize: 14,
   wrap: true,
   saveDir: null,
+  transparency: "background",
 };
 
 export function loadSettings(storage) {
@@ -44,4 +45,20 @@ export function parseHistoryLimit(value, limit) {
   const number = parseInt(value, 10);
   if (Number.isNaN(number)) return null;
   return Math.min(limit, Math.max(1, number));
+}
+
+/** 透過のしかた。背景だけを透かして文字をくっきり残すか、ウィンドウ全体を透かすか。 */
+export const TRANSPARENCY_MODES = [
+  ["background", "背景だけ(文字はくっきり)"],
+  ["window", "ウィンドウ全体"],
+];
+
+/**
+ * 不透明度(%)を、ウィンドウ全体の不透明度と背景色の不透明度(どちらも 0〜1)に振り分ける。
+ * 背景だけのときはウィンドウを不透明のままにし、背景色のアルファで透かす。
+ */
+export function opacityTargets({ opacity, transparency }) {
+  const value = opacity / 100;
+  if (transparency === "window") return { window: value, background: 1 };
+  return { window: 1, background: value };
 }

@@ -4,6 +4,7 @@ import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   loadSettings,
+  opacityTargets,
   parseHistoryLimit,
   saveSettings,
   stepFontSize,
@@ -60,5 +61,21 @@ describe("parseHistoryLimit", () => {
   it("数として読めなければ null", () => {
     expect(parseHistoryLimit("", 200)).toBe(null);
     expect(parseHistoryLimit("abc", 200)).toBe(null);
+  });
+});
+
+describe("opacityTargets", () => {
+  it("背景だけのときはウィンドウを不透明にして背景色を薄くする", () => {
+    expect(opacityTargets({ opacity: 40, transparency: "background" })).toEqual({ window: 1, background: 0.4 });
+  });
+
+  it("ウィンドウ全体のときは背景色を不透明にしてウィンドウを薄くする", () => {
+    expect(opacityTargets({ opacity: 40, transparency: "window" })).toEqual({ window: 0.4, background: 1 });
+  });
+
+  it("以前の版で保存した設定(透過のしかたがない)は背景だけになる", () => {
+    const settings = loadSettings({ getItem: () => JSON.stringify({ opacity: 70 }) });
+    expect(settings.transparency).toBe("background");
+    expect(opacityTargets(settings)).toEqual({ window: 1, background: 0.7 });
   });
 });

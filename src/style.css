@@ -1,8 +1,14 @@
 /* === Base === */
 :root {
-  --bg-primary: #0a0e14;
-  --bg-secondary: #0d1219;
-  --bg-hover: #141d28;
+  /* 背景色のアルファ。「背景だけ透過」のときに不透明度の設定に合わせてスクリプトが書き換える。
+     文字や画像には掛けないので、背景を薄くしても文字はくっきり残る */
+  --bg-alpha: 1;
+  --bg-primary: rgb(10 14 20 / var(--bg-alpha));
+  --bg-secondary: rgb(13 18 25 / var(--bg-alpha));
+  --bg-hover: rgb(20 29 40 / max(var(--bg-alpha), 0.6));
+  /* 設定やポップオーバーは読みやすさを優先し、透かさない */
+  --bg-solid: #0d1219;
+  --bg-solid-input: #0a0e14;
   --border: #1a2233;
   --border-light: #2a3344;
   --text-primary: #c8d0d8;
@@ -28,6 +34,12 @@
   /* 上辺はタイトルバーの上の余白(ボタンまでの距離)に収める */
   --grip-top: 4px;
   --titlebar-height: 32px;
+  --footer-height: 34px;
+}
+
+/* 背景だけを透かすときは、明るい背景の上でも文字が読めるよう薄い影を付ける */
+:root[data-transparency="background"] body {
+  text-shadow: 0 0 2px rgb(0 0 0 / 0.9);
 }
 
 * {
@@ -386,7 +398,7 @@ button {
   transform: translateX(-50%);
   max-width: calc(100% - 20px);
   padding: 0.5em 1em;
-  background: var(--bg-hover);
+  background: var(--bg-solid);
   border: 1px solid var(--accent);
   border-radius: 4px;
   color: var(--text-bright);
@@ -396,8 +408,8 @@ button {
   border-color: var(--red);
 }
 
-/* === Toolbar === */
-#toolbar {
+/* === Filter bar === */
+#filter-bar {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -408,42 +420,20 @@ button {
   font-size: 12px;
 }
 
-.tabs {
-  display: flex;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.tab {
-  padding: 3px 8px;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.tab:hover {
-  color: var(--text-primary);
-}
-
-.tab.active {
-  background: var(--bg-hover);
-  color: var(--text-bright);
-}
-
-#search {
+#search,
+.popover-search {
   flex: 1;
   min-width: 60px;
   padding: 3px 6px;
-  background: var(--bg-primary);
+  background: var(--bg-solid-input);
   border: 1px solid var(--border-light);
   border-radius: 4px;
   color: var(--text-primary);
   font: inherit;
 }
 
-#search::placeholder {
+#search::placeholder,
+.popover-search::placeholder {
   color: var(--text-dim);
 }
 
@@ -516,12 +506,38 @@ button {
 }
 
 /* === Presets === */
-#presets {
-  flex: 1;
-  overflow-y: auto;
-  overflow-x: hidden;
+/* 下部のボタンから開く。一覧の上に重ね、外側を押すと閉じる */
+.popover-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+}
+
+.popover {
+  position: absolute;
+  left: 6px;
+  right: 12px;
+  bottom: calc(var(--footer-height) + 2px);
+  max-height: calc(100% - var(--titlebar-height) - var(--footer-height) - 12px);
   display: flex;
   flex-direction: column;
+  background: var(--bg-solid);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.6);
+}
+
+.popover-search {
+  flex: none;
+  margin: 6px;
+  font-size: 12px;
+}
+
+.popover-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .preset-tree {
@@ -625,9 +641,47 @@ button {
 .presets-footer {
   display: flex;
   gap: 0.5em;
-  padding: var(--pad-y) var(--pad-x);
-  margin-top: auto;
+  padding: 0.5em var(--pad-x);
   border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+/* === Footer === */
+#footer {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--footer-height);
+  /* 下辺と右下のつまみの帯にボタンが掛からないよう、内側に寄せる */
+  padding: 0 calc(var(--grip-corner) + 2px) var(--grip-edge) 6px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.footer-spacer {
+  flex: 1;
+  align-self: stretch;
+}
+
+.footer-btn {
+  padding: 3px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.footer-btn:hover,
+.footer-btn.active {
+  background: var(--bg-hover);
+  color: var(--text-bright);
+}
+
+.titlebar-btn.filtering {
+  color: var(--accent);
 }
 
 /* === Panels (settings, register) === */
@@ -651,7 +705,7 @@ button {
   max-height: 100%;
   overflow-y: auto;
   padding: 1em;
-  background: var(--bg-secondary);
+  background: var(--bg-solid);
   border: 1px solid var(--border-light);
   border-radius: 6px;
 }
@@ -697,7 +751,7 @@ button {
 .panel input[type="number"],
 .panel select {
   padding: 0.3em 0.5em;
-  background: var(--bg-primary);
+  background: var(--bg-solid-input);
   border: 1px solid var(--border-light);
   border-radius: 4px;
   color: var(--text-primary);
@@ -790,8 +844,7 @@ button {
 .resize-se { right: 0; cursor: nwse-resize; }
 
 /* 右辺の帯とスクロールバーが重ならないよう、一覧を帯の幅だけ内側に寄せる */
-#history,
-#presets {
+#history {
   margin-right: var(--grip-edge);
 }
 

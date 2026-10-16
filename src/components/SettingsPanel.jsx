@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import { parseHistoryLimit } from "../settings.js";
+import { TRANSPARENCY_MODES, parseHistoryLimit } from "../settings.js";
 
 /** 履歴の件数、ディスク保存、ショートカット、自動起動などRust側が持つ設定。 */
 const CORNERS = [
@@ -11,6 +11,8 @@ const CORNERS = [
 
 export function SettingsPanel({
   config,
+  transparency,
+  onTransparencyChange,
   onClose,
   onApply,
   onOpenPresets,
@@ -98,6 +100,21 @@ export function SettingsPanel({
           />
           <span>Windows にサインインしたときに自動で起動する</span>
         </label>
+
+        <div class="field">
+          <span>透過するところ(濃さはタイトルバーのつまみで変えます)</span>
+          {TRANSPARENCY_MODES.map(([mode, label]) => (
+            <label key={mode} class="field-check">
+              <input
+                type="radio"
+                name="transparency"
+                checked={transparency === mode}
+                onChange={() => onTransparencyChange(mode)}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
 
         <div class="field">
           <span>ウィンドウの位置と大きさ</span>

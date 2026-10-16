@@ -2,13 +2,20 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { flushSync } from "preact/compat";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { DEFAULT_SETTINGS, loadSettings, saveSettings, stepFontSize } from "../settings.js";
+import {
+  DEFAULT_SETTINGS,
+  loadSettings,
+  opacityTargets,
+  saveSettings,
+  stepFontSize,
+} from "../settings.js";
 import { KINDS, filterItems, filterPresets, folderPaths } from "../search.js";
 import { Titlebar } from "./Titlebar.jsx";
-import { Toolbar } from "./Toolbar.jsx";
+import { FilterBar } from "./FilterBar.jsx";
+import { Footer } from "./Footer.jsx";
 import { StatusRow } from "./StatusRow.jsx";
 import { HistoryItem } from "./HistoryItem.jsx";
-import { PresetTree } from "./PresetTree.jsx";
+import { PresetPopover } from "./PresetPopover.jsx";
 import { RegisterPresetForm } from "./RegisterPresetForm.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 import { ResizeHandles } from "./ResizeHandles.jsx";
@@ -25,9 +32,11 @@ export function App() {
   const [clipboard, setClipboard] = useState(EMPTY_STATE);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState(null);
-  const [view, setView] = useState("history");
+  const [filterOpen, setFilterOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [kinds, setKinds] = useState(ALL_KINDS);
+  const [presetsOpen, setPresetsOpen] = useState(false);
+  const [presetQuery, setPresetQuery] = useState("");
   const [config, setConfig] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [presets, setPresets] = useState([]);
@@ -69,7 +78,7 @@ export function App() {
   useEffect(() => {
     (async () => {
       try {
-        await invoke("set_window_opacity", { opacity: settings.opacity / 100 });
+        await invoke("set_window_opacity", { opacity: opacityTargets(settings).window });
         await invoke("set_pinned", { pinned: settings.pinned });
       } finally {
         await invoke("show_window");
@@ -96,17 +105,29 @@ export function App() {
     };
   }, []);
 
-  // プリセットはファイルを直接編集できるので、表示するたびに読み直す
+  // プリセットはファイルを直接編集できるので、開くたびに読み直す
   useEffect(() => {
-    if (view !== "presets") return;
+    if (!presetsOpen) return;
     loadPresets();
     window.addEventListener("focus", loadPresets);
     return () => window.removeEventListener("focus", loadPresets);
-  }, [view]);
+  }, [presetsOpen]);
+
+  // 開いたらすぐ打ち込めるようにする
+  useEffect(() => {
+    if (filterOpen) searchRef.current?.focus();
+  }, [filterOpen]);
 
   useEffect(() => {
     document.documentElement.style.setProperty("--font-size", `${settings.fontSize}px`);
   }, [settings.fontSize]);
+
+  // 背景だけを透かすときは背景色のアルファを下げ、文字は不透明のまま残す
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--bg-alpha", String(opacityTargets(settings).background));
+    root.dataset.transparency = settings.transparency;
+  }, [settings.opacity, settings.transparency]);
 
   const handleFontSizeStep = useCallback((steps) => {
     setSettings((prev) => {
@@ -128,14 +149,14 @@ export function App() {
       if (e.key === "Escape") {
         setSettingsOpen(false);
         setRegistering(null);
-        if (document.activeElement === searchRef.current) {
-          setQuery("");
-          searchRef.current.blur();
-        }
+        setPresetsOpen(false);
+        if (document.activeElement === searchRef.current) closeFilter();
         return;
       }
       if (!e.ctrlKey) return;
       if (e.key === "f" || e.key === "F") {
+        setPresetsOpen(false);
+        setFilterOpen(true);
         searchRef.current?.focus();
         searchRef.current?.select();
       } else if (e.key === "+" || e.key === ";" || e.key === "=") handleFontSizeStep(1);
@@ -163,9 +184,20 @@ export function App() {
     await invoke("set_pinned", { pinned });
   }, [settings.pinned]);
 
-  const handleOpacityChange = useCallback(async (opacity) => {
-    updateSettings({ opacity });
-    await invoke("set_window_opacity", { opacity: opacity / 100 });
+  /** 不透明度か透過のしかたを変え、ウィンドウ全体の不透明度も合わせる。 */
+  const applyOpacity = useCallback(
+    async (patch) => {
+      updateSettings(patch);
+      await invoke("set_window_opacity", { opacity: opacityTargets({ ...settings, ...patch }).window });
+    },
+    [settings],
+  );
+
+  /** 絞り込みを閉じるときは条件も解く。隠れたまま一覧が絞られていると気づけないため。 */
+  const closeFilter = useCallback(() => {
+    setFilterOpen(false);
+    setQuery("");
+    setKinds(ALL_KINDS);
   }, []);
 
   const handleSave = useCallback(
@@ -219,7 +251,7 @@ export function App() {
   const { paused, status, currentId, items } = clipboard;
   const filtering = query.trim() !== "" || kinds.length !== ALL_KINDS.length;
   const visibleItems = filtering ? filterItems(items, { query, kinds }) : items;
-  const visiblePresets = filterPresets(presets, query);
+  const visiblePresets = filterPresets(presets, presetQuery);
 
   return (
     <>
@@ -232,85 +264,81 @@ export function App() {
         onPauseToggle={() => invoke("set_paused", { paused: !paused })}
         onFontSizeStep={handleFontSizeStep}
         onPinToggle={handlePinToggle}
-        onOpacityChange={handleOpacityChange}
+        onOpacityChange={(opacity) => applyOpacity({ opacity })}
         onWrapToggle={() => updateSettings({ wrap: !settings.wrap })}
         onClose={() => invoke("hide_window")}
       />
-      <Toolbar
-        view={view}
-        onViewChange={setView}
-        query={query}
-        onQueryChange={setQuery}
-        kinds={kinds}
-        onKindsChange={setKinds}
-        onSettingsOpen={() => setSettingsOpen(true)}
-        searchRef={searchRef}
-      />
-      {view === "history" && (
-        <>
-          {paused && (
-            <div class="status-row status-paused">
-              読み取りを停止中です。コピーしても一覧は更新されません
-            </div>
-          )}
-          {status && <StatusRow status={status} />}
-          <div id="history">
-            {visibleItems.map((item) => (
-              <HistoryItem
-                key={item.id}
-                item={item}
-                current={item.id === currentId}
-                wrap={settings.wrap}
-                saving={saving}
-                onCopy={(plain) => invoke("copy_item", { id: item.id, plain })}
-                onSave={() => handleSave(item.id)}
-                onPin={(pinned) => invoke("set_item_pinned", { id: item.id, pinned })}
-                onRegister={() => {
-                  loadPresets();
-                  setRegistering(item);
-                }}
-                onRemove={() => invoke("remove_item", { id: item.id })}
-              />
-            ))}
-            {items.length === 0 && !status && !paused && (
-              <div class="empty-hint">コピーした内容がここに表示されます</div>
-            )}
-            {items.length > 0 && visibleItems.length === 0 && (
-              <div class="empty-hint">一致する項目がありません</div>
-            )}
-          </div>
-        </>
+      {filterOpen && (
+        <FilterBar
+          query={query}
+          onQueryChange={setQuery}
+          kinds={kinds}
+          onKindsChange={setKinds}
+          onClose={closeFilter}
+          searchRef={searchRef}
+        />
       )}
-      {view === "presets" && (
-        <div id="presets">
-          {presetsError && <div class="status-row status-error">{presetsError}</div>}
-          <PresetTree
-            nodes={visiblePresets}
-            onCopy={(path) =>
-              runOrToast(() => invoke("copy_preset", { path }), `「${path.at(-1)}」をコピーしました`)
-            }
-            onRemove={async (path) => {
-              await runOrToast(() => invoke("remove_preset", { path }), "削除しました");
-              loadPresets();
-            }}
-          />
-          {!presetsError && presets.length === 0 && (
-            <div class="empty-hint">
-              プリセットがありません。履歴の「登録」か、設定の「ファイルを開く」から追加できます
-            </div>
-          )}
-          {presets.length > 0 && visiblePresets.length === 0 && (
-            <div class="empty-hint">一致するプリセットがありません</div>
-          )}
-          <div class="presets-footer">
-            <button class="row-btn" onClick={() => runOrToast(() => invoke("open_presets_file"))}>
-              ファイルを開く
-            </button>
-            <button class="row-btn" onClick={loadPresets}>
-              再読み込み
-            </button>
-          </div>
+      {paused && (
+        <div class="status-row status-paused">
+          読み取りを停止中です。コピーしても一覧は更新されません
         </div>
+      )}
+      {status && <StatusRow status={status} />}
+      <div id="history">
+        {visibleItems.map((item) => (
+          <HistoryItem
+            key={item.id}
+            item={item}
+            current={item.id === currentId}
+            wrap={settings.wrap}
+            saving={saving}
+            onCopy={(plain) => invoke("copy_item", { id: item.id, plain })}
+            onSave={() => handleSave(item.id)}
+            onPin={(pinned) => invoke("set_item_pinned", { id: item.id, pinned })}
+            onRegister={() => {
+              loadPresets();
+              setRegistering(item);
+            }}
+            onRemove={() => invoke("remove_item", { id: item.id })}
+          />
+        ))}
+        {items.length === 0 && !status && !paused && (
+          <div class="empty-hint">コピーした内容がここに表示されます</div>
+        )}
+        {items.length > 0 && visibleItems.length === 0 && (
+          <div class="empty-hint">一致する項目がありません</div>
+        )}
+      </div>
+      <Footer
+        presetsOpen={presetsOpen}
+        onPresetsToggle={() => setPresetsOpen((open) => !open)}
+        filterOpen={filterOpen}
+        filtering={filtering}
+        onFilterToggle={() => (filterOpen ? closeFilter() : setFilterOpen(true))}
+        onSettingsOpen={() => setSettingsOpen(true)}
+      />
+      {presetsOpen && (
+        <PresetPopover
+          presets={presets}
+          visiblePresets={visiblePresets}
+          error={presetsError}
+          query={presetQuery}
+          onQueryChange={setPresetQuery}
+          onCopy={async (path) => {
+            const ok = await runOrToast(
+              () => invoke("copy_preset", { path }),
+              `「${path.at(-1)}」をコピーしました`,
+            );
+            if (ok) setPresetsOpen(false);
+          }}
+          onRemove={async (path) => {
+            await runOrToast(() => invoke("remove_preset", { path }), "削除しました");
+            loadPresets();
+          }}
+          onOpenFile={() => runOrToast(() => invoke("open_presets_file"))}
+          onReload={loadPresets}
+          onClose={() => setPresetsOpen(false)}
+        />
       )}
       {registering && (
         <RegisterPresetForm
@@ -323,6 +351,8 @@ export function App() {
       {settingsOpen && config && (
         <SettingsPanel
           config={config}
+          transparency={settings.transparency}
+          onTransparencyChange={(transparency) => applyOpacity({ transparency })}
           onClose={() => setSettingsOpen(false)}
           onApply={applyConfig}
           onOpenPresets={() => runOrToast(() => invoke("open_presets_file"))}
