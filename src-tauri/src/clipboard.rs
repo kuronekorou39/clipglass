@@ -381,6 +381,24 @@ mod tests {
     /// 実際のクリップボードを書き換えるので、通常のテストでは実行しない。
     /// `cargo test -- --ignored` で実行する。終了時に元のテキストへ戻す。
     #[test]
+    fn drop_files_layout_handles_network_paths() {
+        let bytes = build_drop_files(&[
+            "\\\\srv\\共有\\a.txt".to_string(),
+            "\\\\srv\\共有\\b.txt".to_string(),
+        ]);
+        let units: Vec<u16> = bytes[20..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_le_bytes(*pair))
+            .collect();
+        assert_eq!(
+            String::from_utf16_lossy(&units),
+            "\\\\srv\\共有\\a.txt\0\\\\srv\\共有\\b.txt\0\0"
+        );
+    }
+
+    #[test]
     #[ignore]
     fn roundtrip_through_real_clipboard() {
         use windows::Win32::UI::WindowsAndMessaging::{

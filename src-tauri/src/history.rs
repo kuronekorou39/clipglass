@@ -525,6 +525,46 @@ mod tests {
     }
 
     #[test]
+    fn text_at_preview_limit_is_not_truncated() {
+        let mut history = History::default();
+        add_text(&mut history, &"あ".repeat(TEXT_PREVIEW_CHARS), 1);
+        let view = history.view(false);
+        let item = &view.items[0];
+        assert!(!item.truncated);
+        // 文字数はバイト数ではなく文字で数える
+        assert_eq!(item.char_count, Some(TEXT_PREVIEW_CHARS));
+        assert_eq!(
+            item.text.as_ref().unwrap().chars().count(),
+            TEXT_PREVIEW_CHARS
+        );
+    }
+
+    #[test]
+    fn network_file_paths_are_stored_verbatim_and_compared_as_a_whole() {
+        // 共有サーバーのファイルをコピーしても中身は読まず、パスの文字列だけを持つ。
+        // そのため接続が切れても履歴は壊れず、同じ並びのときだけ同一とみなす。
+        let mut history = History::default();
+        let unc = vec![
+            "\\\\server\\share\\報告書.xlsx".to_string(),
+            "\\\\server\\share\\a.txt".to_string(),
+        ];
+        history.insert(Content::Files(unc.clone()), Vec::new(), 1);
+        // 別のサーバーや、一部だけでは一致しない
+        assert!(!history.promote(
+            &Probe::Files(&["\\\\other\\share\\a.txt".to_string()]),
+            &[],
+            2
+        ));
+        assert!(!history.promote(&Probe::Files(&unc[..1]), &[], 3));
+        // まったく同じ並びなら先頭へ移動する
+        add_text(&mut history, "x", 4);
+        assert!(history.promote(&Probe::Files(&unc), &[], 5));
+        let view = history.view(false);
+        assert_eq!(view.items[0].kind, "files");
+        assert_eq!(view.items[0].paths.as_ref(), Some(&unc));
+    }
+
+    #[test]
     fn different_kinds_never_match() {
         let mut history = History::default();
         history.insert(image_content(7), Vec::new(), 1);

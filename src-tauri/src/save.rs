@@ -83,6 +83,20 @@ mod tests {
     }
 
     #[test]
+    fn write_to_unwritable_location_fails_without_leaving_temp() {
+        // 書き込み先の親がファイル(= 書けない場所。切断された共有などの代わり)。
+        let dir = std::env::temp_dir().join(format!("clipglass-unwritable-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("blocker");
+        fs::write(&blocker, b"x").unwrap();
+        let target = blocker.join("image.png");
+        assert!(write_atomically(&target, b"data").is_err());
+        // 一時ファイルの残骸を残さない(dir直下は blocker だけ)
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn failed_write_reports_error() {
         let missing = std::env::temp_dir()
             .join(format!("clipglass-missing-{}", std::process::id()))

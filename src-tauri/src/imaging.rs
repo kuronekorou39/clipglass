@@ -206,6 +206,76 @@ mod tests {
         ));
     }
 
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc: u32 = 0xFFFF_FFFF;
+            for &byte in bytes {
+                crc ^= byte as u32;
+                for _ in 0..8 {
+                    let mask = (crc & 1).wrapping_neg();
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+                }
+            }
+            !crc
+        }
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(b"IHDR");
+        ihdr.extend_from_slice(&width.to_be_bytes());
+        ihdr.extend_from_slice(&height.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8bit, RGBA
+        let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(&ihdr);
+        png.extend_from_slice(&crc32(&ihdr).to_be_bytes());
+        // 寸法の確認だけで弾くことを試すので、IDATは最小限(中身は展開しない)。
+        let idat = [b'I', b'D', b'A', b'T', 0x78, 0x01, 0x00];
+        png.extend_from_slice(&3u32.to_be_bytes());
+        png.extend_from_slice(&idat);
+        png.extend_from_slice(&crc32(&idat).to_be_bytes());
+        png.extend_from_slice(&0u32.to_be_bytes());
+        png.extend_from_slice(b"IEND");
+        png.extend_from_slice(&crc32(b"IEND").to_be_bytes());
+        png
+    }
+
+    #[test]
+    fn corrupt_png_is_rejected() {
+        // 署名のあとが壊れたPNGと、まったくのゴミはどちらも読み取りを拒む
+        let broken = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4];
+        assert!(matches!(
+            decode(&RawImage::Png(broken)),
+            Err(DecodeError::Invalid(_))
+        ));
+        assert!(matches!(
+            decode(&RawImage::Png(vec![0u8; 16])),
+            Err(DecodeError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn corrupt_dib_is_rejected() {
+        // ヘッダーに満たない長さ
+        assert!(matches!(
+            decode(&RawImage::Dib(vec![0u8; 4])),
+            Err(DecodeError::Invalid(_))
+        ));
+        // ヘッダーは正しいが画素データが途中で切れている
+        let mut dib = to_dib(&sample());
+        dib.truncate(DIB_HEADER_SIZE + 4);
+        assert!(decode(&RawImage::Dib(dib)).is_err());
+    }
+
+    #[test]
+    fn oversized_png_is_rejected_before_decoding() {
+        // IHDRが巨大な寸法を宣言するPNG。画素を一切持たなくても、
+        // 寸法の確認だけで弾くことを確かめる(大きなメモリー確保を避ける)。
+        let png = png_header(100_000, 100_000);
+        assert!(matches!(
+            decode(&RawImage::Png(png)),
+            Err(DecodeError::TooLarge)
+        ));
+    }
+
     #[test]
     fn thumbnail_keeps_aspect_ratio() {
         let image = RgbaImage::new(THUMBNAIL_MAX_EDGE * 4, THUMBNAIL_MAX_EDGE * 2);
