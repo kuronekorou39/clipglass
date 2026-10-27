@@ -1,8 +1,10 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { onDragRegionMouseDown } from "../windowDrag.js";
 import { OPACITY_MAX, OPACITY_MIN, OPACITY_STEP } from "../settings.js";
 
-/** 文字サイズと折り返しは設定パネルにある。ここには頻繁に触るものだけを置く。 */
+/**
+ * 文字サイズと折り返しは設定パネルにある。ここには頻繁に触るものだけを置く。
+ * タスクバーに出さないので最小化は置かず、✕ で通知領域へ隠す。
+ */
 export function Titlebar({ pinned, opacity, paused, onPauseToggle, onPinToggle, onOpacityChange, onClose }) {
   return (
     <div id="titlebar" data-drag-region onMouseDown={onDragRegionMouseDown}>
@@ -38,15 +40,8 @@ export function Titlebar({ pinned, opacity, paused, onPauseToggle, onPinToggle, 
           {pinned ? "◆" : "◇"}
         </button>
         <button
-          class="titlebar-btn"
-          title="最小化"
-          onClick={() => getCurrentWindow().minimize()}
-        >
-          {"─"}
-        </button>
-        <button
           class="titlebar-btn btn-close"
-          title="閉じる(通知領域に残ります。終了は通知領域のメニューから)"
+          title="隠す(通知領域に残ります。終了は通知領域のメニューから)"
           onClick={onClose}
         >
           {"✕"}

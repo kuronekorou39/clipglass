@@ -43,7 +43,6 @@ const PRESETS = [{ name: "挨拶", path: ["挨拶"], children: [{ name: "朝", p
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args) => invoke(...args) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ minimize() {} }) }));
 
 const { App } = await import("./App.jsx");
 
@@ -142,6 +141,8 @@ describe("App", () => {
     const titlebar = $("#titlebar");
     expect(titlebar.querySelector('[aria-label="文字を大きく"]')).toBeNull();
     expect(titlebar.textContent).not.toContain("↵");
+    // タスクバーに出さないので、最小化もない
+    expect(titlebar.querySelector('[title="最小化"]')).toBeNull();
     await click($('button[aria-label="設定"]'));
     await click($('[aria-label="設定"] [aria-label="文字を大きく"]'));
     expect(document.documentElement.style.getPropertyValue("--font-size")).toBe("16px");
