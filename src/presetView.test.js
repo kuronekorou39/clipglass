@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadPresetView, pathKey, savePresetView, toggleCollapsed } from "./presetView.js";
+import { innerFolderKeys, loadPresetView, pathKey, savePresetView, setCollapsedMany, toggleCollapsed } from "./presetView.js";
 
 function fakeStorage(initial = null) {
   let value = initial;
@@ -33,5 +33,23 @@ describe("presetView", () => {
     expect([...closed].sort()).toEqual(["a", "b"]);
     expect(toggleCollapsed(closed, "a", true).has("a")).toBe(false);
     expect(base.has("b")).toBe(false);
+  });
+
+  it("setCollapsedMany はまとめて足し引きする", () => {
+    const closed = setCollapsedMany(new Set(), ["a", "b"], false);
+    expect([...closed].sort()).toEqual(["a", "b"]);
+    expect([...setCollapsedMany(closed, ["a"], true)]).toEqual(["b"]);
+  });
+
+  it("innerFolderKeys は中の入れ子フォルダーだけを返す(自分と末端は含まない)", () => {
+    const node = {
+      name: "親",
+      path: ["親"],
+      children: [
+        { name: "子F", path: ["親", "子F"], children: [{ name: "孫F", path: ["親", "子F", "孫F"], children: [] }] },
+        { name: "葉", path: ["親", "葉"], text: "x" },
+      ],
+    };
+    expect(innerFolderKeys(node)).toEqual([pathKey(["親", "子F"]), pathKey(["親", "子F", "孫F"])]);
   });
 });

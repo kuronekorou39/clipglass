@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { presetChanges } from "../presets.js";
-import { loadPresetView, savePresetView, toggleCollapsed } from "../presetView.js";
+import { loadPresetView, savePresetView, setCollapsedMany, toggleCollapsed } from "../presetView.js";
 import { folderPaths } from "../search.js";
 import { PresetEditor } from "./PresetEditor.jsx";
 import { PresetTree } from "./PresetTree.jsx";
@@ -42,6 +42,15 @@ export function PresetPopover({
   const toggleFolder = (key, open) => {
     setCollapsed((prev) => {
       const next = toggleCollapsed(prev, key, open);
+      savePresetView(localStorage, { collapsed: next, scroll: bodyRef.current?.scrollTop ?? 0 });
+      return next;
+    });
+  };
+
+  // フォルダーの中の入れ子をまとめて開く・閉じる
+  const setFolders = (keys, open) => {
+    setCollapsed((prev) => {
+      const next = setCollapsedMany(prev, keys, open);
       savePresetView(localStorage, { collapsed: next, scroll: bodyRef.current?.scrollTop ?? 0 });
       return next;
     });
@@ -124,6 +133,7 @@ export function PresetPopover({
             collapsed={collapsed}
             forceOpen={query.trim() !== ""}
             onToggleFolder={toggleFolder}
+            onSetFolders={setFolders}
             onCopy={onCopy}
             onEdit={(node) => setEditing({ node })}
           />
@@ -147,15 +157,7 @@ export function PresetPopover({
         ) : (
           <div class="presets-footer">
             <button
-              class="row-btn with-icon"
-              disabled={Boolean(error)}
-              onClick={() => setEditing({ isFolder: false, folder: [] })}
-            >
-              <Icon name="plus" size={12} />
-              プリセット
-            </button>
-            <button
-              class="row-btn with-icon"
+              class="text-btn with-icon"
               disabled={Boolean(error)}
               onClick={() => setEditing({ isFolder: true, folder: [] })}
             >
@@ -163,7 +165,15 @@ export function PresetPopover({
               フォルダー
             </button>
             <button
-              class="row-btn with-icon push-right"
+              class="text-btn with-icon"
+              disabled={Boolean(error)}
+              onClick={() => setEditing({ isFolder: false, folder: [] })}
+            >
+              <Icon name="plus" size={12} />
+              プリセット
+            </button>
+            <button
+              class="text-btn with-icon push-right"
               title="presets.yaml の場所をエクスプローラーで表示"
               onClick={onRevealFile}
             >

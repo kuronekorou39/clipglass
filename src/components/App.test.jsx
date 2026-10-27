@@ -252,10 +252,16 @@ describe("App", () => {
 
   it("プリセットとフォルダーを新しく作れる", async () => {
     await click($("#footer .footer-btn"));
+    // 下部は「フォルダー」が先、「プリセット」が後
+    const footerLabels = [...root.querySelectorAll(".presets-footer button")].map((b) => b.textContent.trim());
+    expect(footerLabels.indexOf("フォルダー")).toBeLessThan(footerLabels.indexOf("プリセット"));
     await click([...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent.includes("プリセット")));
     const form = $('form[aria-label="プリセットを作成"]');
     // 作成中も元のプリセットは隠れない
     expect($(".preset-leaf").textContent).toContain("朝");
+    // 新規作成では入れる場所(フォルダー)が、文字より先に来る
+    const order = [...form.querySelectorAll("select, textarea")].map((el) => el.getAttribute("aria-label"));
+    expect(order.indexOf("入れる場所")).toBeLessThan(order.indexOf("文字"));
     // 説明は任意。文字だけで作れる
     await type(form.querySelector('[aria-label="文字"]'), "山田\n太郎");
     await act(async () => form.requestSubmit());

@@ -31,6 +31,21 @@ export function PresetEditor({ target, folders, onSave, onRemove, onReorder, onC
 
   const choices = folderChoices(folders, node && isFolder ? node.path : null);
   const title = `${isFolder ? "フォルダー" : "プリセット"}を${node ? "編集" : "作成"}`;
+
+  const placeField = (
+    <label class="editor-place">
+      <Icon name="folder" />
+      <span class="editor-place-label">入れる場所</span>
+      <select value={folder} aria-label="入れる場所" onChange={(e) => setFolder(e.target.value)}>
+        <option value={ROOT_FOLDER_KEY}>先頭</option>
+        {choices.map((path) => (
+          <option key={folderKey(path)} value={folderKey(path)}>
+            {path.join(" / ")}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
   const ready = isFolder ? name.trim() !== "" : text.trim() !== "";
 
   const submit = (e) => {
@@ -45,6 +60,8 @@ export function PresetEditor({ target, folders, onSave, onRemove, onReorder, onC
         <Icon name={isFolder ? "folder" : "list"} />
         {title}
       </div>
+      {/* 新しく作るときは、まず入れる場所を決める */}
+      {!node && placeField}
       {isFolder ? (
         <input
           ref={firstRef}
@@ -80,17 +97,8 @@ export function PresetEditor({ target, folders, onSave, onRemove, onReorder, onC
           />
         </>
       )}
-      <label class="editor-place">
-        <Icon name="folder" />
-        <select value={folder} aria-label="入れる場所" onChange={(e) => setFolder(e.target.value)}>
-          <option value={ROOT_FOLDER_KEY}>先頭</option>
-          {choices.map((path) => (
-            <option key={folderKey(path)} value={folderKey(path)}>
-              {path.join(" / ")}
-            </option>
-          ))}
-        </select>
-      </label>
+      {/* 編集では、値のあとに場所を置く */}
+      {node && placeField}
       <div class="editor-actions">
         <button class="row-btn primary with-icon" type="submit" disabled={!ready}>
           <Icon name="check" />

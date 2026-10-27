@@ -1,34 +1,34 @@
 import { presetDescription } from "../presets.js";
-import { pathKey } from "../presetView.js";
+import { innerFolderKeys, pathKey } from "../presetView.js";
 import { countLeaves, firstLine } from "../search.js";
 import { Icon } from "./Icon.jsx";
 
-function EditButton({ node, onEdit }) {
+/** フォルダーの開閉やコピーにならないよう、押したときの既定の動きを止めてから実行する。 */
+function hush(run) {
+  return (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    run();
+  };
+}
+
+function IconButton({ icon, title, label, onClick }) {
   return (
-    <button
-      class="icon-btn"
-      title={node.children ? "フォルダーを編集" : "プリセットを編集"}
-      aria-label="編集"
-      onClick={(e) => {
-        // フォルダーの開閉やコピーにならないようにする
-        e.preventDefault();
-        e.stopPropagation();
-        onEdit(node);
-      }}
-    >
-      {"✎"}
+    <button class="icon-btn" title={title} aria-label={label} onClick={hush(onClick)}>
+      <Icon name={icon} size={13} />
     </button>
   );
 }
 
 const samePath = (a, b) => a !== null && a.length === b.length && a.every((part, i) => part === b[i]);
 
-function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, onCopy, onEdit }) {
+function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, onSetFolders, onCopy, onEdit }) {
   const editing = samePath(editingPath, node.path) ? " editing" : "";
   if (node.children) {
     const key = pathKey(node.path);
     // 検索中は一致を隠さないよう開いておく。閉じていた記憶は検索の前後で保つ
     const open = forceOpen || !collapsed.has(key);
+    const inner = innerFolderKeys(node);
     return (
       <details
         class="preset-folder"
@@ -41,7 +41,25 @@ function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, o
           <Icon name="folder" />
           <span class="preset-name">{node.name}</span>
           <span class="preset-count">{countLeaves(node.children)}件</span>
-          <EditButton node={node} onEdit={onEdit} />
+          <span class="row-tools">
+            {inner.length > 0 && (
+              <>
+                <IconButton
+                  icon="expandAll"
+                  title="中のフォルダーを全部開く"
+                  label="全部開く"
+                  onClick={() => onSetFolders(inner, true)}
+                />
+                <IconButton
+                  icon="collapseAll"
+                  title="中のフォルダーを全部閉じる"
+                  label="全部閉じる"
+                  onClick={() => onSetFolders(inner, false)}
+                />
+              </>
+            )}
+            <IconButton icon="pencil" title="フォルダーを編集" label="編集" onClick={() => onEdit(node)} />
+          </span>
         </summary>
         <div class="preset-children">
           {node.children.map((child) => (
@@ -52,6 +70,7 @@ function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, o
               collapsed={collapsed}
               forceOpen={forceOpen}
               onToggleFolder={onToggleFolder}
+              onSetFolders={onSetFolders}
               onCopy={onCopy}
               onEdit={onEdit}
             />
@@ -80,7 +99,9 @@ function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, o
       {/* コピーする文字が主。説明は付けたときだけ添える */}
       <span class="preset-text">{firstLine(node.text) || "(空)"}</span>
       {description && <span class="preset-desc">{description}</span>}
-      <EditButton node={node} onEdit={onEdit} />
+      <span class="row-tools">
+        <IconButton icon="pencil" title="プリセットを編集" label="編集" onClick={() => onEdit(node)} />
+      </span>
     </div>
   );
 }
@@ -88,6 +109,7 @@ function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, o
 /**
  * プリセットの木。フォルダーは折りたため、プリセットはクリックでコピーする。✎ で編集する。
  * プリセットの行はコピーする文字を先に出し、説明は付けたときだけ右に添える。
+ * 入れ子のフォルダーを持つ行には、中を全部開く／閉じるボタンを添える。
  */
 export function PresetTree({
   nodes,
@@ -95,6 +117,7 @@ export function PresetTree({
   collapsed,
   forceOpen = false,
   onToggleFolder,
+  onSetFolders,
   onCopy,
   onEdit,
 }) {
@@ -108,6 +131,7 @@ export function PresetTree({
           collapsed={collapsed}
           forceOpen={forceOpen}
           onToggleFolder={onToggleFolder}
+          onSetFolders={onSetFolders}
           onCopy={onCopy}
           onEdit={onEdit}
         />

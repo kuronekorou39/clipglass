@@ -42,3 +42,28 @@ export function toggleCollapsed(collapsed, key, open) {
   else next.add(key);
   return next;
 }
+
+/** 集合に `keys` をまとめて足した(open=false)、または除いた(open=true)新しい集合を返す。 */
+export function setCollapsedMany(collapsed, keys, open) {
+  const next = new Set(collapsed);
+  for (const key of keys) {
+    if (open) next.delete(key);
+    else next.add(key);
+  }
+  return next;
+}
+
+/** フォルダー `node` の中にある、入れ子のフォルダー(自分は含まない)のキー。 */
+export function innerFolderKeys(node) {
+  const keys = [];
+  const walk = (folder) => {
+    for (const child of folder.children ?? []) {
+      if (child.children) {
+        keys.push(pathKey(child.path));
+        walk(child);
+      }
+    }
+  };
+  walk(node);
+  return keys;
+}
