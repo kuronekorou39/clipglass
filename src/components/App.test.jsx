@@ -277,6 +277,41 @@ describe("App", () => {
     expect(invoke).toHaveBeenCalledWith("remove_preset", { path: ["挨拶"] });
   });
 
+  it("ショートカットはキーを押して記録し、記録のあいだは今のショートカットを止める", async () => {
+    await click($('button[aria-label="設定"]'));
+    await click([...root.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "起動"));
+    const box = $('[aria-label="ショートカット"]');
+    expect(box.textContent).toBe("Ctrl + Shift + V");
+    expect(root.querySelector('[aria-label="設定"] input[type="text"]')).toBeNull();
+    await click(box);
+    expect(invoke).toHaveBeenCalledWith("suspend_hotkey", { suspended: true });
+    const press = async (init) =>
+      act(async () => box.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init })));
+    await press({ code: "AltLeft", key: "Alt", altKey: true });
+    expect(box.textContent).toBe("Alt + …");
+    // 修飾キーなしは記録しない
+    await press({ code: "KeyQ", key: "q" });
+    expect(root.textContent).toContain("一緒に押してください");
+    await press({ code: "KeyQ", key: "Q", altKey: true, shiftKey: true });
+    await act(async () => {});
+    expect(invoke).toHaveBeenCalledWith("set_hotkey", { hotkey: "Alt+Shift+Q" });
+  });
+
+  it("ショートカットの記録は Esc で取りやめ、元のショートカットに戻す", async () => {
+    await click($('button[aria-label="設定"]'));
+    await click([...root.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "起動"));
+    await click($('[aria-label="ショートカット"]'));
+    await act(async () =>
+      $('[aria-label="ショートカット"]').dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, code: "Escape", key: "Escape" }),
+      ),
+    );
+    expect(invoke).toHaveBeenCalledWith("suspend_hotkey", { suspended: false });
+    expect(invoke).not.toHaveBeenCalledWith("set_hotkey", expect.anything());
+    // Esc で設定パネルまで閉じない
+    expect(dialog("設定").closest(".overlay").classList.contains("closing")).toBe(false);
+  });
+
   it("Ctrl+F で絞り込みを開く", async () => {
     await key({ key: "f", ctrlKey: true });
     expect($("#search")).toBeTruthy();

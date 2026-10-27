@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { FONT_SIZE_MAX, FONT_SIZE_MIN, parseHistoryLimit } from "../settings.js";
+import { HotkeyRecorder } from "./HotkeyRecorder.jsx";
 
 const TABS = [
   ["view", "表示"],
@@ -99,31 +100,17 @@ function HistoryTab({ config, onApply, onOpenDataDir }) {
   );
 }
 
-function StartupTab({ config, onApply }) {
-  const [hotkey, setHotkey] = useState(config.hotkey);
-  useEffect(() => setHotkey(config.hotkey), [config]);
-  const commitHotkey = () => {
-    if (hotkey.trim() !== config.hotkey) onApply("set_hotkey", { hotkey });
-  };
-
+function StartupTab({ config, onApply, onSuspendHotkey }) {
   return (
     <>
-      <label class="field" title="空にすると使いません">
-        <span>出す/隠すショートカット</span>
-        <div class="field-row">
-          <input
-            type="text"
-            value={hotkey}
-            placeholder="例: Alt+Shift+V"
-            spellcheck={false}
-            onInput={(e) => setHotkey(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && commitHotkey()}
-          />
-          <button class="row-btn" onClick={commitHotkey}>
-            適用
-          </button>
-        </div>
-      </label>
+      <div class="field">
+        <span title="枠をクリックして、使いたいキーを押します">出す/隠すショートカット</span>
+        <HotkeyRecorder
+          hotkey={config.hotkey}
+          onChange={(hotkey) => onApply("set_hotkey", { hotkey })}
+          onSuspend={onSuspendHotkey}
+        />
+      </div>
       <Check
         checked={config.autostart}
         onChange={(enabled) => onApply("set_autostart", { enabled })}
@@ -165,6 +152,7 @@ export function SettingsPanel({
   onWrapChange,
   onClose,
   onApply,
+  onSuspendHotkey,
   onOpenDataDir,
   onSnap,
   onResetSize,
@@ -204,7 +192,9 @@ export function SettingsPanel({
           {tab === "history" && (
             <HistoryTab config={config} onApply={onApply} onOpenDataDir={onOpenDataDir} />
           )}
-          {tab === "startup" && <StartupTab config={config} onApply={onApply} />}
+          {tab === "startup" && (
+            <StartupTab config={config} onApply={onApply} onSuspendHotkey={onSuspendHotkey} />
+          )}
           {tab === "window" && <WindowTab onSnap={onSnap} onResetSize={onResetSize} />}
         </div>
       </div>

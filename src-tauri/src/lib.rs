@@ -451,6 +451,20 @@ fn set_hotkey(app: AppHandle, state: State<AppState>, hotkey: String) -> Result<
     Ok(())
 }
 
+/// 設定でショートカットを記録するあいだ、今のショートカットを止める。
+/// 止めないと、今と同じキーを押したときにウィンドウが隠れてしまう。
+#[tauri::command]
+fn suspend_hotkey(app: AppHandle, state: State<AppState>, suspended: bool) -> Result<(), String> {
+    if suspended {
+        return app
+            .global_shortcut()
+            .unregister_all()
+            .map_err(|e| e.to_string());
+    }
+    let hotkey = state.config.lock().unwrap().hotkey.clone();
+    register_hotkey(&app, &hotkey)
+}
+
 #[tauri::command]
 fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
     let launcher = app.autolaunch();
@@ -805,6 +819,7 @@ pub fn run() {
             set_history_limit,
             set_history_persist,
             set_hotkey,
+            suspend_hotkey,
             set_autostart,
             get_presets,
             copy_preset,

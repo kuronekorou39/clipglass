@@ -355,6 +355,7 @@ export function App() {
           onWrapChange={(wrap) => updateSettings({ wrap })}
           onClose={() => setSettingsOpen(false)}
           onApply={applyConfig}
+          onSuspendHotkey={(suspended) => runOrToast(() => invoke("suspend_hotkey", { suspended }))}
           onOpenDataDir={() => runOrToast(() => invoke("open_data_dir"))}
           onSnap={(corner) => runOrToast(() => invoke("snap_window", { corner }))}
           onResetSize={() => runOrToast(() => invoke("reset_window_size"))}
