@@ -82,10 +82,10 @@ beforeEach(async () => {
     if (command === "get_state") return STATE;
     if (command === "get_presets") return PRESETS;
     if (command === "add_preset_from_item") return "いまの内容";
-    if (command === "update_preset") return [...args.path.slice(0, -1), args.name];
+    if (command === "update_preset") return [...args.path.slice(0, -1), args.name ?? args.text];
     if (command === "move_preset") return [...args.folder, args.path.at(-1)];
     if (command === "create_preset" || command === "create_preset_folder") {
-      return [...args.folder, args.name];
+      return [...args.folder, args.name ?? args.text];
     }
     return null;
   });
@@ -165,8 +165,10 @@ describe("App", () => {
     await click($('button[aria-label="設定"]'));
     await click($('[aria-label="設定"] [aria-label="文字を大きく"]'));
     expect(document.documentElement.style.getPropertyValue("--font-size")).toBe("16px");
-    const wrap = $('[aria-label="設定"] input[type="checkbox"]');
+    const wrap = $('[aria-label="設定"] [role="switch"]');
+    expect(wrap.getAttribute("aria-checked")).toBe("true");
     await click(wrap);
+    expect(wrap.getAttribute("aria-checked")).toBe("false");
     expect(JSON.parse(localStorage.getItem("clipglass-settings")).wrap).toBe(false);
   });
 
@@ -225,7 +227,10 @@ describe("App", () => {
     const form = $('form[aria-label="プリセットを編集"]');
     // 編集中も一覧は見えていて、編集中の行に印が付く
     expect($(".preset-leaf.editing").textContent).toContain("朝");
-    await type(form.querySelector('[aria-label="名前"]'), "おはよう");
+    // 値(文字)が先で、説明はそのあと
+    const fields = [...form.querySelectorAll("textarea, input")].map((el) => el.getAttribute("aria-label"));
+    expect(fields.indexOf("文字")).toBeLessThan(fields.indexOf("説明"));
+    await type(form.querySelector('[aria-label="説明"]'), "おはよう");
     await type(form.querySelector('[aria-label="文字"]'), "おはようございます!");
     await act(async () => {
       const select = form.querySelector("select");
@@ -251,11 +256,11 @@ describe("App", () => {
     const form = $('form[aria-label="プリセットを作成"]');
     // 作成中も元のプリセットは隠れない
     expect($(".preset-leaf").textContent).toContain("朝");
-    await type(form.querySelector('[aria-label="名前"]'), "署名");
+    // 説明は任意。文字だけで作れる
     await type(form.querySelector('[aria-label="文字"]'), "山田\n太郎");
     await act(async () => form.requestSubmit());
     await act(async () => {});
-    expect(invoke).toHaveBeenCalledWith("create_preset", { folder: [], name: "署名", text: "山田\n太郎" });
+    expect(invoke).toHaveBeenCalledWith("create_preset", { folder: [], name: null, text: "山田\n太郎" });
 
     await act(async () => {});
     await click([...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent.includes("フォルダー")));
@@ -271,7 +276,7 @@ describe("App", () => {
     await click($('.preset-folder [aria-label="編集"]'));
     const form = $('form[aria-label="フォルダーを編集"]');
     expect([...form.querySelectorAll("option")].map((o) => o.textContent)).toEqual(["先頭"]);
-    await click([...form.querySelectorAll("button")].find((b) => b.textContent === "削除"));
+    await click(form.querySelector('[aria-label="削除"]'));
     expect(invoke).not.toHaveBeenCalledWith("remove_preset", expect.anything());
     await click([...form.querySelectorAll("button")].find((b) => b.textContent === "中身ごと削除"));
     expect(invoke).toHaveBeenCalledWith("remove_preset", { path: ["挨拶"] });

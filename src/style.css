@@ -536,10 +536,10 @@ button {
 .popover {
   position: absolute;
   left: 6px;
-  right: 12px;
-  /* 中身やフォルダーの開閉で大きさが変わらないよう、上下の位置を決めておく */
-  top: calc(var(--titlebar-height) + 6px);
   bottom: calc(var(--footer-height) + 2px);
+  /* 中身やフォルダーの開閉で変わらない大きさにする。大きなウィンドウでも広げすぎない */
+  width: min(400px, calc(100% - 18px));
+  height: min(460px, calc(100% - var(--titlebar-height) - var(--footer-height) - 8px));
   display: flex;
   flex-direction: column;
   background: var(--bg-solid);
@@ -637,20 +637,35 @@ button {
 
 .preset-name {
   flex-shrink: 0;
-  max-width: 50%;
+  max-width: 60%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.preset-folder > summary .icon {
+  color: var(--text-dim);
+}
+
+/* コピーする文字が主 */
 .preset-text {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+/* 説明は任意。付けたときだけ小さく添える */
+.preset-desc {
+  flex-shrink: 1;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-size: 0.85em;
 }
 
 .preset-folder > summary .icon-btn,
@@ -826,11 +841,86 @@ button {
   font-size: 0.9em;
 }
 
-.field-check {
+/* 設定の1行。見出しを左、操作を右に置く */
+.setting-row {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 0.8em;
+}
+
+.setting-label {
+  display: inline-flex;
+  align-items: center;
   gap: 0.5em;
+  color: var(--text-primary);
+}
+
+.setting-label .icon {
+  color: var(--text-dim);
+}
+
+.icon {
+  flex-shrink: 0;
+}
+
+/* チェックボックスの代わりのスイッチ */
+.setting-row.toggle {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
+}
+
+.setting-row.toggle:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 30px;
+  height: 17px;
+  border-radius: 9px;
+  background: var(--border-light);
+  transition: background var(--open-duration) ease;
+}
+
+.switch.on {
+  background: var(--accent);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-bright);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.4);
+  transition: transform var(--open-duration) ease;
+}
+
+.switch.on .switch-knob {
+  transform: translateX(13px);
+  background: var(--bg-solid);
+}
+
+.setting-row.toggle:hover .switch:not(.on) {
+  background: var(--text-dim);
+}
+
+/* 記号付きのボタン */
+.with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
 }
 
 .panel input[type="text"],
@@ -955,8 +1045,14 @@ button {
 }
 
 .panel-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
+  transition:
+    color var(--fade-duration) ease,
+    border-color var(--fade-duration) ease;
 }
 
 .panel-tabs button.active {
@@ -983,12 +1079,6 @@ button {
   color: var(--text-bright);
 }
 
-.field-inline {
-  display: flex;
-  align-items: center;
-  gap: 0.8em;
-}
-
 .align-start {
   align-self: flex-start;
 }
@@ -996,8 +1086,18 @@ button {
 /* 画面の隅を、画面での並びどおり 2 × 2 に置く */
 .corner-grid {
   display: grid;
-  grid-template-columns: repeat(2, 5em);
+  grid-template-columns: repeat(2, 6em);
   gap: 0.4em;
+}
+
+.corner-grid .row-btn {
+  justify-content: center;
+}
+
+/* 右の列は、矢印を右に置いて隅を指す */
+.corner-grid .top-right,
+.corner-grid .bottom-right {
+  flex-direction: row-reverse;
 }
 
 /* === Item menu === */
@@ -1055,8 +1155,28 @@ button {
 }
 
 .editor-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45em;
   font-weight: 600;
   color: var(--text-bright);
+}
+
+.editor-place {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  color: var(--text-dim);
+}
+
+.editor-place select {
+  flex: 1;
+  min-width: 0;
+}
+
+.editor-side .row-btn {
+  display: inline-flex;
+  align-items: center;
 }
 
 .preset-editor input,

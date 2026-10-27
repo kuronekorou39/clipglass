@@ -22,7 +22,7 @@ const FILE_HEADER: &str = "# Clipglass の設定。アプリが書き換える�
 pub struct HistoryConfig {
     /// 固定していない項目の上限。
     pub max_items: usize,
-    /// 固定していない項目もディスクに保存するかどうか。固定した項目は常に保存する。
+    /// 固定していない項目もディスクに保存するかどうか(初期値は保存する)。固定した項目は常に保存する。
     pub persist: bool,
 }
 
@@ -38,7 +38,7 @@ impl Default for HistoryConfig {
     fn default() -> Self {
         Self {
             max_items: DEFAULT_HISTORY_MAX_ITEMS,
-            persist: false,
+            persist: true,
         }
     }
 }
@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(parse("").unwrap(), Config::default());
         let config = parse("history:\n  max_items: 50\n").unwrap();
         assert_eq!(config.history.max_items, 50);
-        assert!(!config.history.persist);
+        assert!(config.history.persist);
         assert_eq!(config.hotkey, DEFAULT_HOTKEY);
     }
 

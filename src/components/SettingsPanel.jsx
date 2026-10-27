@@ -1,12 +1,13 @@
 import { useEffect, useState } from "preact/hooks";
 import { FONT_SIZE_MAX, FONT_SIZE_MIN, parseHistoryLimit } from "../settings.js";
 import { HotkeyRecorder } from "./HotkeyRecorder.jsx";
+import { Icon } from "./Icon.jsx";
 
 const TABS = [
-  ["view", "表示"],
-  ["history", "履歴"],
-  ["startup", "起動"],
-  ["window", "ウィンドウ"],
+  ["view", "表示", "eye"],
+  ["history", "履歴", "clock"],
+  ["startup", "起動", "power"],
+  ["window", "ウィンドウ", "window"],
 ];
 
 /** 画面での並びどおり(左上・右上・左下・右下)に 2 × 2 で置く。 */
@@ -17,20 +18,42 @@ const CORNERS = [
   ["bottom-right", "右下"],
 ];
 
-function Check({ checked, onChange, title, children }) {
+/** 項目の見出し。頭に記号を付ける。 */
+function Label({ icon, title, children }) {
   return (
-    <label class="field-check" title={title}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      <span>{children}</span>
-    </label>
+    <span class="setting-label" title={title}>
+      <Icon name={icon} />
+      {children}
+    </span>
+  );
+}
+
+/** オンとオフの切り替え。見出しを左、つまみを右に置く。 */
+function Toggle({ icon, checked, onChange, title, children }) {
+  return (
+    <button
+      type="button"
+      class="setting-row toggle"
+      role="switch"
+      aria-checked={checked}
+      title={title}
+      onClick={() => onChange(!checked)}
+    >
+      <Label icon={icon}>{children}</Label>
+      <span class={`switch${checked ? " on" : ""}`} aria-hidden="true">
+        <span class="switch-knob" />
+      </span>
+    </button>
   );
 }
 
 function ViewTab({ settings, onFontSizeStep, onWrapChange }) {
   return (
     <>
-      <div class="field">
-        <span title="Ctrl と +/-/0、Ctrl とホイールでも変えられます">文字サイズ</span>
+      <div class="setting-row">
+        <Label icon="text" title="Ctrl と +/-/0、Ctrl とホイールでも変えられます">
+          文字サイズ
+        </Label>
         <div class="stepper">
           <button
             class="row-btn"
@@ -51,9 +74,9 @@ function ViewTab({ settings, onFontSizeStep, onWrapChange }) {
           </button>
         </div>
       </div>
-      <Check checked={settings.wrap} onChange={onWrapChange}>
+      <Toggle icon="wrap" checked={settings.wrap} onChange={onWrapChange}>
         長い文を折り返す
-      </Check>
+      </Toggle>
     </>
   );
 }
@@ -74,8 +97,10 @@ function HistoryTab({ config, onApply, onOpenDataDir }) {
 
   return (
     <>
-      <label class="field-inline" title="固定した項目は数えません">
-        <span>件数</span>
+      <label class="setting-row">
+        <Label icon="list" title="固定した項目は数えません">
+          件数
+        </Label>
         <input
           type="number"
           min={1}
@@ -86,14 +111,16 @@ function HistoryTab({ config, onApply, onOpenDataDir }) {
           onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
         />
       </label>
-      <Check
+      <Toggle
+        icon="disk"
         checked={config.historyPersist}
         onChange={(persist) => onApply("set_history_persist", { persist })}
         title="固定した項目は、この設定に関わらず保存します"
       >
         次回の起動でも残す
-      </Check>
-      <button class="row-btn align-start" title={config.dataDir} onClick={onOpenDataDir}>
+      </Toggle>
+      <button class="row-btn with-icon align-start" title={config.dataDir} onClick={onOpenDataDir}>
+        <Icon name="folderOpen" />
         データフォルダーを開く
       </button>
     </>
@@ -104,19 +131,23 @@ function StartupTab({ config, onApply, onSuspendHotkey }) {
   return (
     <>
       <div class="field">
-        <span title="枠をクリックして、使いたいキーを押します">出す/隠すショートカット</span>
+        <Label icon="keyboard" title="枠をクリックして、使いたいキーを押します">
+          出す/隠すショートカット
+        </Label>
         <HotkeyRecorder
           hotkey={config.hotkey}
           onChange={(hotkey) => onApply("set_hotkey", { hotkey })}
           onSuspend={onSuspendHotkey}
         />
       </div>
-      <Check
+      <Toggle
+        icon="power"
         checked={config.autostart}
         onChange={(enabled) => onApply("set_autostart", { enabled })}
+        title="サインインしたときに起動し、通知領域に置きます"
       >
         Windows と一緒に起動
-      </Check>
+      </Toggle>
     </>
   );
 }
@@ -125,18 +156,20 @@ function WindowTab({ onSnap, onResetSize }) {
   return (
     <>
       <div class="field">
-        <span title="Ctrl+Shift+矢印で移動、Ctrl+Shift+Alt+矢印で大きさを変えられます">
+        <Label icon="window" title="Ctrl+Shift+矢印で移動、Ctrl+Shift+Alt+矢印で大きさを変えられます">
           画面の隅へ
-        </span>
+        </Label>
         <div class="corner-grid">
           {CORNERS.map(([corner, label]) => (
-            <button key={corner} class="row-btn" onClick={() => onSnap(corner)}>
+            <button key={corner} class={`row-btn with-icon ${corner}`} onClick={() => onSnap(corner)}>
+              <Icon name={corner} />
               {label}
             </button>
           ))}
         </div>
       </div>
-      <button class="row-btn align-start" onClick={onResetSize}>
+      <button class="row-btn with-icon align-start" onClick={onResetSize}>
+        <Icon name="resize" />
         標準の大きさに戻す
       </button>
     </>
@@ -169,7 +202,7 @@ export function SettingsPanel({
           </button>
         </div>
         <div class="panel-tabs" role="tablist">
-          {TABS.map(([id, label]) => (
+          {TABS.map(([id, label, icon]) => (
             <button
               key={id}
               role="tab"
@@ -177,6 +210,7 @@ export function SettingsPanel({
               aria-selected={tab === id}
               onClick={() => setTab(id)}
             >
+              <Icon name={icon} />
               {label}
             </button>
           ))}

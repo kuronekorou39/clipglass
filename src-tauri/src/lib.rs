@@ -528,12 +528,19 @@ fn add_preset_from_item(state: State<AppState>, id: u64) -> Result<String, Strin
 fn create_preset(
     state: State<AppState>,
     folder: Vec<String>,
-    name: String,
+    name: Option<String>,
     text: String,
 ) -> Result<Vec<String>, String> {
+    // 説明(名前)は任意。なければ文字から作る
+    let name = description(name).unwrap_or_else(|| presets::default_name(&text));
     edit_presets(&state, |root| {
         presets::add_unique(root, &folder, &name, presets::Node::Text(text))
     })
+}
+
+/// 空白だけの説明は、説明なしとして扱う。
+fn description(name: Option<String>) -> Option<String> {
+    name.filter(|name| !name.trim().is_empty())
 }
 
 /// `folder` の中に空のフォルダーを作る。
@@ -548,15 +555,23 @@ fn create_preset_folder(
     })
 }
 
-/// 名前と文字(プリセットのとき)を書き換える。
+/// 名前と文字(プリセットのとき)を書き換える。プリセットの名前(説明)は任意で、
+/// なければ文字から作る。フォルダーの名前は省けない。
 #[tauri::command]
 fn update_preset(
     state: State<AppState>,
     path: Vec<String>,
-    name: String,
+    name: Option<String>,
     text: Option<String>,
 ) -> Result<Vec<String>, String> {
-    edit_presets(&state, |root| presets::update(root, &path, &name, text))
+    edit_presets(&state, |root| {
+        let name = match (description(name), &text) {
+            (Some(name), _) => name,
+            (None, Some(text)) => presets::auto_name_at(root, &path, text)?,
+            (None, None) => return Err("名前を入力してください".to_string()),
+        };
+        presets::update(root, &path, &name, text)
+    })
 }
 
 /// 別のフォルダーへ移す。

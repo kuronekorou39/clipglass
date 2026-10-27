@@ -3,6 +3,7 @@ import { presetChanges } from "../presets.js";
 import { folderPaths } from "../search.js";
 import { PresetEditor } from "./PresetEditor.jsx";
 import { PresetTree } from "./PresetTree.jsx";
+import { Icon } from "./Icon.jsx";
 
 /**
  * 下部のボタンから開くプリセットの一覧。外側を押すか Esc で閉じる。
@@ -38,7 +39,8 @@ export function PresetPopover({
     const node = editing.node;
     if (!node) {
       const command = editing.isFolder ? "create_preset_folder" : "create_preset";
-      const args = { folder: values.folder, name: values.name.trim() };
+      // プリセットの説明は任意。空なら null を送り、文字から名前を作らせる
+      const args = { folder: values.folder, name: values.name.trim() || null };
       if (!editing.isFolder) args.text = values.text;
       if ((await call(command, args, "作成しました")).ok) finish();
       return;
@@ -121,24 +123,27 @@ export function PresetPopover({
         ) : (
           <div class="presets-footer">
             <button
-              class="row-btn"
+              class="row-btn with-icon"
               disabled={Boolean(error)}
               onClick={() => setEditing({ isFolder: false, folder: [] })}
             >
-              ＋ プリセット
+              <Icon name="plus" size={12} />
+              プリセット
             </button>
             <button
-              class="row-btn"
+              class="row-btn with-icon"
               disabled={Boolean(error)}
               onClick={() => setEditing({ isFolder: true, folder: [] })}
             >
-              ＋ フォルダー
+              <Icon name="plus" size={12} />
+              フォルダー
             </button>
             <button
-              class="row-btn push-right"
+              class="row-btn with-icon push-right"
               title="presets.yaml の場所をエクスプローラーで表示"
               onClick={onRevealFile}
             >
+              <Icon name="folderOpen" size={12} />
               場所
             </button>
           </div>

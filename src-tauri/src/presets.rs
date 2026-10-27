@@ -264,6 +264,40 @@ pub fn unique_name(siblings: &Root, base: &str) -> String {
         .expect("番号は尽きない")
 }
 
+/// 文字から作った名前(「名前」や「名前 (2)」)かどうか。説明を付けていないプリセットはこの形になる。
+pub fn is_auto_name(name: &str, text: &str) -> bool {
+    let base = default_name(text);
+    if name == base {
+        return true;
+    }
+    name.strip_prefix(&format!("{base} ("))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// 説明を付けないプリセットの名前。文字から作り、今の名前がすでにその形ならそのまま使う。
+/// 兄弟と重なるときは番号を付ける(自分の今の名前は重なりに数えない)。
+pub fn auto_name_at(root: &Root, path: &[String], text: &str) -> Result<String, String> {
+    let (name, parent) = split_parent(path)?;
+    if is_auto_name(name, text) {
+        return Ok(name.clone());
+    }
+    let siblings = if parent.is_empty() {
+        root
+    } else {
+        match find(root, parent) {
+            Some(Node::Folder(children)) => children,
+            _ => return Err(format!("フォルダー{}が見つかりません", location(parent))),
+        }
+    };
+    let others: Root = siblings
+        .iter()
+        .filter(|(n, _)| n != name)
+        .cloned()
+        .collect();
+    Ok(unique_name(&others, &default_name(text)))
+}
+
 /// `path` のフォルダーの中身。空の `path` は先頭。
 fn folder_mut<'a>(root: &'a mut Root, path: &[String]) -> Result<&'a mut Root, String> {
     let mut current = root;
@@ -610,6 +644,48 @@ mod tests {
         save(&file, &Vec::new()).unwrap();
         assert!(load(&file).unwrap().is_empty());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn auto_names_follow_the_text() {
+        assert!(is_auto_name(
+            "おはよう",
+            "おはよう
+二行目"
+        ));
+        assert!(is_auto_name("おはよう (2)", "おはよう"));
+        assert!(!is_auto_name("挨拶", "おはよう"));
+        assert!(!is_auto_name("おはよう (x)", "おはよう"));
+
+        let mut root = parse(
+            "朝: おはよう
+こんにちは: こんにちは
+挨拶:
+  夜: こんばんは
+",
+        )
+        .unwrap();
+        // 説明を付けていた項目を外すと、文字から名前を作る
+        assert_eq!(
+            auto_name_at(&root, &path(&["朝"]), "おはよう").unwrap(),
+            "おはよう"
+        );
+        // 兄弟と重なれば番号を付ける
+        assert_eq!(
+            auto_name_at(&root, &path(&["朝"]), "こんにちは").unwrap(),
+            "こんにちは (2)"
+        );
+        // すでに文字から作った名前なら、そのまま
+        assert_eq!(
+            auto_name_at(&root, &path(&["こんにちは"]), "こんにちは").unwrap(),
+            "こんにちは"
+        );
+        assert_eq!(
+            auto_name_at(&root, &path(&["挨拶", "夜"]), "おやすみ").unwrap(),
+            "おやすみ"
+        );
+        root.clear();
+        assert!(auto_name_at(&root, &path(&["ない", "a"]), "b").is_err());
     }
 
     #[test]

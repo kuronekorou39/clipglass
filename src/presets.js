@@ -34,11 +34,37 @@ export function folderChoices(folders, editingFolder) {
   return folders.filter((path) => !startsWith(path, editingFolder));
 }
 
-/** 編集の内容から、呼ぶ処理を決める。名前・文字の変更と、フォルダーの移動を分けて行う。 */
+/** 説明を付けないプリセットの名前の長さ。Rust 側の presets::default_name と合わせる。 */
+const DEFAULT_NAME_CHARS = 20;
+
+/** 文字から作る名前。最初の空でない行の先頭で、なければ「プリセット」。Rust 側と同じ規則。 */
+export function defaultName(text) {
+  const line = text.split(/\r?\n/).map((part) => part.trim()).find((part) => part !== "");
+  if (line === undefined) return "プリセット";
+  return Array.from(line).slice(0, DEFAULT_NAME_CHARS).join("").trim();
+}
+
+/**
+ * プリセットの説明。名前が文字から作ったもの(「名前」「名前 (2)」)なら説明なしとして空を返す。
+ * フォルダーは名前そのもの。
+ */
+export function presetDescription(node) {
+  if (node.children) return node.name;
+  const base = defaultName(node.text);
+  if (node.name === base) return "";
+  const suffix = node.name.startsWith(`${base} (`) ? node.name.slice(base.length + 2) : null;
+  return suffix && /^\d+\)$/.test(suffix) ? "" : node.name;
+}
+
+/**
+ * 編集の内容から、呼ぶ処理を決める。名前・文字の変更と、フォルダーの移動を分けて行う。
+ * プリセットの `name` は説明で、空なら null(文字から名前を作る)にする。
+ */
 export function presetChanges(node, { name, text, folder }) {
   const trimmed = name.trim();
-  const renamed = trimmed !== node.name;
-  const rewritten = !node.children && text !== node.text;
   const moved = folderKey(folder) !== folderKey(parentPath(node.path));
-  return { name: trimmed, update: renamed || rewritten, moved };
+  if (node.children) return { name: trimmed, update: trimmed !== node.name, moved };
+  const rewritten = text !== node.text;
+  const described = trimmed !== presetDescription(node);
+  return { name: trimmed || null, update: rewritten || described, moved };
 }

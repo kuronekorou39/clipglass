@@ -1,4 +1,6 @@
+import { presetDescription } from "../presets.js";
 import { countLeaves, firstLine } from "../search.js";
+import { Icon } from "./Icon.jsx";
 
 function EditButton({ node, onEdit }) {
   return (
@@ -26,6 +28,7 @@ function PresetNode({ node, editingPath, onCopy, onEdit }) {
     return (
       <details class="preset-folder" open>
         <summary class={editing}>
+          <Icon name="folder" />
           <span class="preset-name">{node.name}</span>
           <span class="preset-count">{countLeaves(node.children)}件</span>
           <EditButton node={node} onEdit={onEdit} />
@@ -45,6 +48,7 @@ function PresetNode({ node, editingPath, onCopy, onEdit }) {
       </details>
     );
   }
+  const description = presetDescription(node);
   return (
     <div
       class={`preset-leaf${editing}`}
@@ -60,14 +64,18 @@ function PresetNode({ node, editingPath, onCopy, onEdit }) {
         }
       }}
     >
-      <span class="preset-name">{node.name}</span>
-      <span class="preset-text">{firstLine(node.text)}</span>
+      {/* コピーする文字が主。説明は付けたときだけ添える */}
+      <span class="preset-text">{firstLine(node.text) || "(空)"}</span>
+      {description && <span class="preset-desc">{description}</span>}
       <EditButton node={node} onEdit={onEdit} />
     </div>
   );
 }
 
-/** プリセットの木。フォルダーは折りたため、プリセットはクリックでコピーする。✎ で編集する。 */
+/**
+ * プリセットの木。フォルダーは折りたため、プリセットはクリックでコピーする。✎ で編集する。
+ * プリセットの行はコピーする文字を先に出し、説明は付けたときだけ右に添える。
+ */
 export function PresetTree({ nodes, editingPath = null, onCopy, onEdit }) {
   return (
     <div class="preset-tree">

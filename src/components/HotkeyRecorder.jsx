@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { formatHotkey, readHotkey } from "../hotkey.js";
 import { hotkeyConflicts } from "../hotkeyConflicts.js";
+import { Icon } from "./Icon.jsx";
 
 /**
  * ショートカットを、実際にキーを押して記録する。
@@ -104,20 +105,22 @@ export function HotkeyRecorder({ hotkey, onChange, onSuspend }) {
           </button>
         ) : (
           <button
-            class="row-btn"
+            class="row-btn with-icon"
             title="ショートカットを使わない"
             disabled={!hotkey}
             onClick={() => change("")}
           >
+            <Icon name="ban" size={12} />
             なし
           </button>
         )}
         {previous !== null && !recording && (
           <button
-            class="row-btn"
+            class="row-btn with-icon"
             title={`${formatHotkey(previous) || "なし"} に戻す`}
             onClick={undo}
           >
+            <Icon name="undo" size={12} />
             元に戻す
           </button>
         )}

@@ -6,6 +6,8 @@ import {
   parentPath,
   parseFolderKey,
   presetChanges,
+  defaultName,
+  presetDescription,
 } from "./presets.js";
 
 describe("folderKey", () => {
@@ -42,8 +44,24 @@ describe("folderChoices", () => {
   });
 });
 
+describe("defaultName と presetDescription", () => {
+  it("文字の最初の空でない行の先頭20文字を名前にする", () => {
+    expect(defaultName("\n  おはよう  \n二行目")).toBe("おはよう");
+    expect(defaultName("あ".repeat(30))).toBe("あ".repeat(20));
+    expect(defaultName(" \n ")).toBe("プリセット");
+  });
+
+  it("文字から作った名前は説明なし、それ以外は説明として扱う", () => {
+    expect(presetDescription({ name: "おはよう", path: ["おはよう"], text: "おはよう" })).toBe("");
+    expect(presetDescription({ name: "おはよう (2)", path: ["おはよう (2)"], text: "おはよう" })).toBe("");
+    expect(presetDescription({ name: "朝", path: ["朝"], text: "おはよう" })).toBe("朝");
+    expect(presetDescription({ name: "挨拶", path: ["挨拶"], children: [] })).toBe("挨拶");
+  });
+});
+
 describe("presetChanges", () => {
   const leaf = { name: "朝", path: ["挨拶", "朝"], text: "おはよう" };
+  const plain = { name: "おはよう", path: ["おはよう"], text: "おはよう" };
   const folder = { name: "挨拶", path: ["挨拶"], children: [] };
 
   it("変えていなければ何もしない", () => {
@@ -52,12 +70,21 @@ describe("presetChanges", () => {
       update: false,
       moved: false,
     });
+    expect(presetChanges(plain, { name: "", text: "おはよう", folder: [] }).update).toBe(false);
   });
 
-  it("名前の前後の空白は落とし、名前か文字が変われば書き換える", () => {
+  it("説明の前後の空白は落とし、説明か文字が変われば書き換える", () => {
     expect(presetChanges(leaf, { name: " 朝 ", text: "おはよう", folder: ["挨拶"] }).update).toBe(false);
     expect(presetChanges(leaf, { name: "昼", text: "おはよう", folder: ["挨拶"] }).update).toBe(true);
     expect(presetChanges(leaf, { name: "朝", text: "こんにちは", folder: ["挨拶"] }).update).toBe(true);
+  });
+
+  it("説明を消すと、名前は文字から作らせる(null を送る)", () => {
+    expect(presetChanges(leaf, { name: "", text: "おはよう", folder: ["挨拶"] })).toEqual({
+      name: null,
+      update: true,
+      moved: false,
+    });
   });
 
   it("フォルダーが変われば移す", () => {
