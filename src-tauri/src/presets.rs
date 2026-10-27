@@ -26,11 +26,16 @@ const FILE_HEADER: &str = "\
 ";
 
 const INITIAL_FILE: &str = "\
-例:
-  挨拶: お世話になっております。
+挨拶:
+  朝: おはようございます。
+  お礼: |
+    お世話になっております。
+    よろしくお願いいたします。
+定型文:
   署名: |
     山田 太郎
     example@example.com
+  住所: 〒100-0001 東京都千代田区1-1-1
 ";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -632,7 +637,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("clipglass-presets-{}", std::process::id()));
         let file = dir.join(FILE_NAME);
         let mut root = load(&file).unwrap();
-        assert!(find_text(&root, &path(&["例", "挨拶"])).is_some());
+        // 例には少なくとも2つのフォルダーを入れておく
+        assert!(find_text(&root, &path(&["挨拶", "朝"])).is_some());
+        assert!(find_text(&root, &path(&["定型文", "署名"])).is_some());
         assert!(fs::read_to_string(&file)
             .unwrap()
             .starts_with("# Clipglass"));

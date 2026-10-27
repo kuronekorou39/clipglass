@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { presetChanges } from "../presets.js";
+import { loadPresetView, savePresetView, toggleCollapsed } from "../presetView.js";
 import { folderPaths } from "../search.js";
 import { PresetEditor } from "./PresetEditor.jsx";
 import { PresetTree } from "./PresetTree.jsx";
@@ -24,11 +25,31 @@ export function PresetPopover({
   onClose,
 }) {
   const [editing, setEditing] = useState(null);
+  // 閉じているフォルダーと、前回のスクロール位置を覚えておく
+  const [collapsed, setCollapsed] = useState(() => loadPresetView(localStorage).collapsed);
   const searchRef = useRef(null);
+  const bodyRef = useRef(null);
 
   useEffect(() => {
     if (!editing) searchRef.current?.focus();
   }, [editing]);
+
+  // 開いたら、前回見ていた位置まで戻す
+  useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = loadPresetView(localStorage).scroll;
+  }, []);
+
+  const toggleFolder = (key, open) => {
+    setCollapsed((prev) => {
+      const next = toggleCollapsed(prev, key, open);
+      savePresetView(localStorage, { collapsed: next, scroll: bodyRef.current?.scrollTop ?? 0 });
+      return next;
+    });
+  };
+
+  const rememberScroll = (e) => {
+    savePresetView(localStorage, { collapsed, scroll: e.target.scrollTop });
+  };
 
   const finish = () => {
     setEditing(null);
@@ -95,11 +116,14 @@ export function PresetPopover({
           aria-label="プリセットを検索"
           onInput={(e) => onQueryChange(e.target.value)}
         />
-        <div class="popover-body">
+        <div class="popover-body" ref={bodyRef} onScroll={rememberScroll}>
           {error && <div class="status-row status-error">{error}</div>}
           <PresetTree
             nodes={visiblePresets}
             editingPath={editing?.node?.path ?? null}
+            collapsed={collapsed}
+            forceOpen={query.trim() !== ""}
+            onToggleFolder={toggleFolder}
             onCopy={onCopy}
             onEdit={(node) => setEditing({ node })}
           />
