@@ -1,9 +1,37 @@
 import { onDragRegionMouseDown } from "../windowDrag.js";
 import { OPACITY_MAX, OPACITY_MIN, OPACITY_STEP } from "../settings.js";
 
+// 文字の記号(‖ や ─)は細くフォントでも形が変わるので、線の太さを決めて描く
+const ICON = { width: 14, height: 14, viewBox: "0 0 14 14", fill: "currentColor", "aria-hidden": true };
+
+function PauseIcon() {
+  return (
+    <svg {...ICON}>
+      <rect x="3" y="2" width="3" height="10" rx="0.8" />
+      <rect x="8" y="2" width="3" height="10" rx="0.8" />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg {...ICON}>
+      <path d="M4 2.2v9.6a.6.6 0 0 0 .9.5l7.4-4.8a.6.6 0 0 0 0-1L4.9 1.7a.6.6 0 0 0-.9.5z" />
+    </svg>
+  );
+}
+
+function HideIcon() {
+  return (
+    <svg {...ICON}>
+      <rect x="2" y="9.5" width="10" height="2" rx="1" />
+    </svg>
+  );
+}
+
 /**
  * 文字サイズと折り返しは設定パネルにある。ここには頻繁に触るものだけを置く。
- * タスクバーに出さないので最小化は置かず、✕ で通知領域へ隠す。
+ * タスクバーに出さないので、最小化の形のボタンで通知領域へ隠す。終了は通知領域のメニューから。
  */
 export function Titlebar({ pinned, opacity, paused, onPauseToggle, onPinToggle, onOpacityChange, onClose }) {
   return (
@@ -18,7 +46,7 @@ export function Titlebar({ pinned, opacity, paused, onPauseToggle, onPinToggle, 
           aria-pressed={paused}
           onClick={onPauseToggle}
         >
-          {paused ? "\u25B6\uFE0E" : "\u2016"}
+          {paused ? <PlayIcon /> : <PauseIcon />}
         </button>
         <span class="titlebar-sep" role="separator" />
         <input
@@ -41,11 +69,12 @@ export function Titlebar({ pinned, opacity, paused, onPauseToggle, onPinToggle, 
           {pinned ? "◆" : "◇"}
         </button>
         <button
-          class="titlebar-btn btn-close"
+          class="titlebar-btn"
           title="隠す(通知領域に残ります。終了は通知領域のメニューから)"
+          aria-label="隠す"
           onClick={onClose}
         >
-          {"✕"}
+          <HideIcon />
         </button>
       </div>
     </div>

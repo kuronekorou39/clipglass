@@ -10,6 +10,7 @@ import { PresetTree } from "./PresetTree.jsx";
  * `call(command, args, message)` は失敗を通知にして `{ ok, value }` を返す。
  */
 export function PresetPopover({
+  closing,
   presets,
   visiblePresets,
   error,
@@ -71,7 +72,11 @@ export function PresetPopover({
   };
 
   return (
-    <div class="popover-backdrop" onMouseDown={onClose}>
+    <div
+      class={`popover-backdrop${closing ? " closing" : ""}`}
+      inert={closing}
+      onMouseDown={onClose}
+    >
       <div
         id="presets"
         class="popover"

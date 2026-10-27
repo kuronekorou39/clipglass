@@ -158,6 +158,7 @@ function WindowTab({ onSnap, onResetSize }) {
 
 /** 設定。項目が多いので、タブで分けて説明はツールチップに回す。 */
 export function SettingsPanel({
+  closing,
   config,
   settings,
   onFontSizeStep,
@@ -171,7 +172,7 @@ export function SettingsPanel({
   const [tab, setTab] = useState("view");
 
   return (
-    <div class="overlay" onClick={onClose}>
+    <div class={`overlay${closing ? " closing" : ""}`} inert={closing} onClick={onClose}>
       <div class="panel" role="dialog" aria-label="設定" onClick={(e) => e.stopPropagation()}>
         <div class="panel-title">
           設定

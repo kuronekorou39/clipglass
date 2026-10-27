@@ -20,6 +20,7 @@ import { ItemMenu } from "./ItemMenu.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 import { ResizeHandles } from "./ResizeHandles.jsx";
 import { windowKeyAction } from "../windowKeys.js";
+import { usePresence } from "../presence.js";
 
 const STATE_EVENT = "clipboard-state";
 const NOTICE_EVENT = "notice";
@@ -44,6 +45,9 @@ export function App() {
   const [menu, setMenu] = useState(null);
   const toastTimer = useRef(null);
   const searchRef = useRef(null);
+  // 閉じるアニメーションのあいだも描画を残す
+  const presetsPresence = usePresence(presetsOpen);
+  const settingsPresence = usePresence(settingsOpen);
 
   const updateSettings = useCallback((patch) => {
     setSettings((prev) => {
@@ -314,8 +318,9 @@ export function App() {
         onFilterToggle={() => (filterOpen ? closeFilter() : setFilterOpen(true))}
         onSettingsOpen={() => setSettingsOpen(true)}
       />
-      {presetsOpen && (
+      {presetsPresence.mounted && (
         <PresetPopover
+          closing={presetsPresence.closing}
           presets={presets}
           visiblePresets={visiblePresets}
           error={presetsError}
@@ -341,8 +346,9 @@ export function App() {
           onClose={() => setMenu(null)}
         />
       )}
-      {settingsOpen && config && (
+      {settingsPresence.mounted && config && (
         <SettingsPanel
+          closing={settingsPresence.closing}
           config={config}
           settings={settings}
           onFontSizeStep={handleFontSizeStep}

@@ -23,6 +23,10 @@
   --font-ui: "Segoe UI", "Yu Gothic UI", "Meiryo", sans-serif;
   --font-mono: "Cascadia Code", "Consolas", "BIZ UDGothic", monospace;
   --move-duration: 200ms;
+  /* 開閉のアニメーション。閉じる長さは presence.js の EXIT_DURATION_MS と合わせる */
+  --fade-duration: 140ms;
+  --open-duration: 180ms;
+  interpolate-size: allow-keywords;
   /* 一覧の文字サイズ。設定に応じてスクリプトが書き換える */
   --font-size: 14px;
   /* 行の余白。文字サイズに比例させる */
@@ -152,10 +156,6 @@ button {
   color: var(--rich);
 }
 
-.titlebar-btn.btn-close:hover {
-  background: var(--red);
-  color: #fff;
-}
 
 #opacity-slider {
   width: 64px;
@@ -587,7 +587,7 @@ button {
 }
 
 .preset-folder[open] > summary::before {
-  content: "▾";
+  transform: rotate(90deg);
 }
 
 .preset-folder > summary:hover {
@@ -1084,10 +1084,116 @@ button {
   }
 }
 
+/* === Open / close animation === */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+@keyframes rise-out {
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+@keyframes drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+/* プリセットは下部のボタンから立ち上がる */
+.popover {
+  transform-origin: bottom left;
+  animation: rise-in var(--open-duration) ease-out;
+}
+
+.popover-backdrop.closing {
+  pointer-events: none;
+}
+
+.popover-backdrop.closing .popover {
+  animation: rise-out var(--fade-duration) ease-in forwards;
+}
+
+/* 設定は背景を暗くしながら、パネルを少し浮かせて出す */
+.overlay {
+  animation: fade-in var(--open-duration) ease-out;
+}
+
+.overlay .panel {
+  animation: rise-in var(--open-duration) ease-out;
+}
+
+.overlay.closing {
+  pointer-events: none;
+  animation: fade-out var(--fade-duration) ease-in forwards;
+}
+
+.overlay.closing .panel {
+  animation: rise-out var(--fade-duration) ease-in forwards;
+}
+
+.panel-body {
+  animation: fade-in var(--open-duration) ease-out;
+}
+
+.preset-editor {
+  animation: rise-in var(--open-duration) ease-out;
+}
+
+.presets-footer,
+#filter-bar {
+  animation: drop-in var(--open-duration) ease-out;
+}
+
+.menu {
+  transform-origin: top left;
+  animation: drop-in var(--fade-duration) ease-out;
+}
+
+/* フォルダーと「データ」の開閉で、高さをなめらかに変える */
+.preset-folder::details-content,
+.item-data::details-content {
+  block-size: 0;
+  overflow: hidden;
+  transition:
+    block-size var(--open-duration) ease,
+    content-visibility var(--open-duration) allow-discrete;
+}
+
+.preset-folder[open]::details-content,
+.item-data[open]::details-content {
+  block-size: auto;
+}
+
+.preset-folder > summary::before {
+  transition: transform var(--open-duration) ease;
+}
+
 @media (prefers-reduced-motion: reduce) {
   ::view-transition-group(*),
   ::view-transition-old(*),
-  ::view-transition-new(*) {
+  ::view-transition-new(*),
+  *,
+  *::details-content {
     animation: none !important;
+    transition: none !important;
   }
 }

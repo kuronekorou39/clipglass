@@ -45,6 +45,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args) => invoke(...args) })
 vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
 
 const { App } = await import("./App.jsx");
+const { EXIT_DURATION_MS } = await import("../presence.js");
 
 let root;
 
@@ -52,6 +53,11 @@ async function click(element) {
   expect(element).toBeTruthy();
   await act(async () => element.click());
   await act(async () => {});
+}
+
+/** 閉じるアニメーションが終わるまで待つ。 */
+async function settle() {
+  await act(() => new Promise((resolve) => setTimeout(resolve, EXIT_DURATION_MS + 20)));
 }
 
 async function key(init) {
@@ -99,6 +105,9 @@ describe("App", () => {
     await click($('button[aria-label="設定"]'));
     expect(dialog("設定")).toBeTruthy();
     await key({ key: "Escape" });
+    // 閉じる途中は操作を受け付けず、アニメーションのあとに消える
+    expect(dialog("設定").closest(".overlay").classList.contains("closing")).toBe(true);
+    await settle();
     expect(dialog("設定")).toBeNull();
   });
 
@@ -146,6 +155,11 @@ describe("App", () => {
     // 読み取りの停止は、区切り線をはさんで不透明度のつまみの左に置く
     const order = [...titlebar.querySelectorAll(".titlebar-buttons > *")];
     const pause = order.findIndex((el) => el.title === "読み取りを停止する");
+    // 記号は文字ではなく、太さを決めた図で描く
+    expect(order[pause].querySelector("svg")).toBeTruthy();
+    // ✕ ではなく、最小化の形で「隠す」
+    expect(titlebar.textContent).not.toContain("✕");
+    expect(titlebar.querySelector('[aria-label="隠す"]')).toBeTruthy();
     expect(order[pause + 1].getAttribute("role")).toBe("separator");
     expect(order[pause + 2].id).toBe("opacity-slider");
     await click($('button[aria-label="設定"]'));
@@ -176,6 +190,7 @@ describe("App", () => {
     expect($("#history")).toBeTruthy();
     expect(root.textContent).toContain("朝");
     await key({ key: "Escape" });
+    await settle();
     expect(dialog("プリセット")).toBeNull();
   });
 
@@ -183,6 +198,7 @@ describe("App", () => {
     await click($("#footer .footer-btn"));
     await click($(".preset-leaf"));
     expect(invoke).toHaveBeenCalledWith("copy_preset", { path: ["挨拶", "朝"] });
+    await settle();
     expect(dialog("プリセット")).toBeNull();
   });
 
