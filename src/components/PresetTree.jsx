@@ -18,18 +18,27 @@ function EditButton({ node, onEdit }) {
   );
 }
 
-function PresetNode({ node, onCopy, onEdit }) {
+const samePath = (a, b) => a !== null && a.length === b.length && a.every((part, i) => part === b[i]);
+
+function PresetNode({ node, editingPath, onCopy, onEdit }) {
+  const editing = samePath(editingPath, node.path) ? " editing" : "";
   if (node.children) {
     return (
       <details class="preset-folder" open>
-        <summary>
+        <summary class={editing}>
           <span class="preset-name">{node.name}</span>
           <span class="preset-count">{countLeaves(node.children)}件</span>
           <EditButton node={node} onEdit={onEdit} />
         </summary>
         <div class="preset-children">
           {node.children.map((child) => (
-            <PresetNode key={child.name} node={child} onCopy={onCopy} onEdit={onEdit} />
+            <PresetNode
+              key={child.name}
+              node={child}
+              editingPath={editingPath}
+              onCopy={onCopy}
+              onEdit={onEdit}
+            />
           ))}
           {node.children.length === 0 && <div class="preset-empty">空のフォルダー</div>}
         </div>
@@ -38,7 +47,7 @@ function PresetNode({ node, onCopy, onEdit }) {
   }
   return (
     <div
-      class="preset-leaf"
+      class={`preset-leaf${editing}`}
       role="button"
       tabIndex={0}
       title={node.text}
@@ -59,11 +68,17 @@ function PresetNode({ node, onCopy, onEdit }) {
 }
 
 /** プリセットの木。フォルダーは折りたため、プリセットはクリックでコピーする。✎ で編集する。 */
-export function PresetTree({ nodes, onCopy, onEdit }) {
+export function PresetTree({ nodes, editingPath = null, onCopy, onEdit }) {
   return (
     <div class="preset-tree">
       {nodes.map((node) => (
-        <PresetNode key={node.name} node={node} onCopy={onCopy} onEdit={onEdit} />
+        <PresetNode
+          key={node.name}
+          node={node}
+          editingPath={editingPath}
+          onCopy={onCopy}
+          onEdit={onEdit}
+        />
       ))}
     </div>
   );

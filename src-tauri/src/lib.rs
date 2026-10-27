@@ -567,16 +567,9 @@ fn remove_preset(state: State<AppState>, path: Vec<String>) -> Result<(), String
 }
 
 #[tauri::command]
-fn open_presets_file(state: State<AppState>) -> Result<(), String> {
-    let file = &state.paths().presets_file;
-    // なければ例を書いたファイルを作ってから開く。壊れたファイルを直すためにも使うので、中身は読まない。
-    presets::ensure_exists(file)?;
-    tauri_plugin_opener::open_path(file, None::<&str>).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 fn reveal_presets_file(state: State<AppState>) -> Result<(), String> {
     let file = &state.paths().presets_file;
+    // なければ例を書いたファイルを作ってから表示する。壊れたファイルを直すためにも使うので、中身は読まない。
     presets::ensure_exists(file)?;
     tauri_plugin_opener::reveal_item_in_dir(file).map_err(|e| e.to_string())
 }
@@ -822,7 +815,6 @@ pub fn run() {
             move_preset,
             reorder_preset,
             remove_preset,
-            open_presets_file,
             reveal_presets_file,
             open_data_dir,
         ])

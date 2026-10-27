@@ -6,7 +6,7 @@ import { PresetTree } from "./PresetTree.jsx";
 
 /**
  * 下部のボタンから開くプリセットの一覧。外側を押すか Esc で閉じる。
- * ✎ や「＋」で、一覧と入れ替えて編集画面を出す。
+ * ✎ や「＋」で、一覧の下に編集画面を出す。一覧は隠さず、編集中の行に印を付ける。
  * `call(command, args, message)` は失敗を通知にして `{ ok, value }` を返す。
  */
 export function PresetPopover({
@@ -18,7 +18,6 @@ export function PresetPopover({
   onCopy,
   call,
   onReload,
-  onOpenFile,
   onRevealFile,
   onClose,
 }) {
@@ -80,9 +79,33 @@ export function PresetPopover({
         aria-label="プリセット"
         onMouseDown={(e) => e.stopPropagation()}
       >
+        <input
+          ref={searchRef}
+          class="popover-search"
+          type="search"
+          value={query}
+          placeholder="プリセットを検索"
+          aria-label="プリセットを検索"
+          onInput={(e) => onQueryChange(e.target.value)}
+        />
+        <div class="popover-body">
+          {error && <div class="status-row status-error">{error}</div>}
+          <PresetTree
+            nodes={visiblePresets}
+            editingPath={editing?.node?.path ?? null}
+            onCopy={onCopy}
+            onEdit={(node) => setEditing({ node })}
+          />
+          {!error && presets.length === 0 && (
+            <div class="empty-hint">履歴の「登録」か「＋ プリセット」で追加できます</div>
+          )}
+          {presets.length > 0 && visiblePresets.length === 0 && (
+            <div class="empty-hint">一致するプリセットがありません</div>
+          )}
+        </div>
         {editing ? (
           <PresetEditor
-            key={editing.node?.path.join("/") ?? "new"}
+            key={editing.node?.path.join("/") ?? (editing.isFolder ? "new-folder" : "new")}
             target={editing}
             folders={folderPaths(presets)}
             onSave={save}
@@ -91,57 +114,29 @@ export function PresetPopover({
             onCancel={() => setEditing(null)}
           />
         ) : (
-          <>
-            <input
-              ref={searchRef}
-              class="popover-search"
-              type="search"
-              value={query}
-              placeholder="プリセットを検索"
-              aria-label="プリセットを検索"
-              onInput={(e) => onQueryChange(e.target.value)}
-            />
-            <div class="popover-body">
-              {error && <div class="status-row status-error">{error}</div>}
-              <PresetTree
-                nodes={visiblePresets}
-                onCopy={onCopy}
-                onEdit={(node) => setEditing({ node })}
-              />
-              {!error && presets.length === 0 && (
-                <div class="empty-hint">履歴の「登録」か「＋ プリセット」で追加できます</div>
-              )}
-              {presets.length > 0 && visiblePresets.length === 0 && (
-                <div class="empty-hint">一致するプリセットがありません</div>
-              )}
-            </div>
-            <div class="presets-footer">
-              <button
-                class="row-btn"
-                disabled={Boolean(error)}
-                onClick={() => setEditing({ isFolder: false, folder: [] })}
-              >
-                ＋ プリセット
-              </button>
-              <button
-                class="row-btn"
-                disabled={Boolean(error)}
-                onClick={() => setEditing({ isFolder: true, folder: [] })}
-              >
-                ＋ フォルダー
-              </button>
-              <button class="row-btn push-right" title="presets.yaml を開く" onClick={onOpenFile}>
-                ファイル
-              </button>
-              <button
-                class="row-btn"
-                title="presets.yaml の場所をエクスプローラーで表示"
-                onClick={onRevealFile}
-              >
-                場所
-              </button>
-            </div>
-          </>
+          <div class="presets-footer">
+            <button
+              class="row-btn"
+              disabled={Boolean(error)}
+              onClick={() => setEditing({ isFolder: false, folder: [] })}
+            >
+              ＋ プリセット
+            </button>
+            <button
+              class="row-btn"
+              disabled={Boolean(error)}
+              onClick={() => setEditing({ isFolder: true, folder: [] })}
+            >
+              ＋ フォルダー
+            </button>
+            <button
+              class="row-btn push-right"
+              title="presets.yaml の場所をエクスプローラーで表示"
+              onClick={onRevealFile}
+            >
+              場所
+            </button>
+          </div>
         )}
       </div>
     </div>

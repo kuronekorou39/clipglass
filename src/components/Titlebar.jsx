@@ -12,6 +12,15 @@ export function Titlebar({ pinned, opacity, paused, onPauseToggle, onPinToggle, 
         Clipglass
       </span>
       <div class="titlebar-buttons">
+        <button
+          class={`titlebar-btn${paused ? " paused" : ""}`}
+          title={paused ? "読み取りを再開する" : "読み取りを停止する"}
+          aria-pressed={paused}
+          onClick={onPauseToggle}
+        >
+          {paused ? "\u25B6\uFE0E" : "\u2016"}
+        </button>
+        <span class="titlebar-sep" role="separator" />
         <input
           type="range"
           id="opacity-slider"
@@ -23,14 +32,6 @@ export function Titlebar({ pinned, opacity, paused, onPauseToggle, onPinToggle, 
           aria-label="ウィンドウの不透明度"
           onInput={(e) => onOpacityChange(parseInt(e.target.value))}
         />
-        <button
-          class={`titlebar-btn${paused ? " paused" : ""}`}
-          title={paused ? "読み取りを再開する" : "読み取りを停止する"}
-          aria-pressed={paused}
-          onClick={onPauseToggle}
-        >
-          {paused ? "\u25B6\uFE0E" : "\u2016"}
-        </button>
         <button
           class={`titlebar-btn${pinned ? " active" : ""}`}
           title={pinned ? "常に手前に表示しない" : "常に手前に表示する"}

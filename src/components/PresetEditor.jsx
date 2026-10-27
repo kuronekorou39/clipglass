@@ -51,7 +51,7 @@ export function PresetEditor({ target, folders, onSave, onRemove, onReorder, onC
           value={text}
           placeholder="コピーする文字"
           aria-label="文字"
-          rows={6}
+          rows={4}
           spellcheck={false}
           onInput={(e) => setText(e.target.value)}
           onKeyDown={(e) => {

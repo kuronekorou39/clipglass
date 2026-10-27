@@ -143,6 +143,11 @@ describe("App", () => {
     expect(titlebar.textContent).not.toContain("↵");
     // タスクバーに出さないので、最小化もない
     expect(titlebar.querySelector('[title="最小化"]')).toBeNull();
+    // 読み取りの停止は、区切り線をはさんで不透明度のつまみの左に置く
+    const order = [...titlebar.querySelectorAll(".titlebar-buttons > *")];
+    const pause = order.findIndex((el) => el.title === "読み取りを停止する");
+    expect(order[pause + 1].getAttribute("role")).toBe("separator");
+    expect(order[pause + 2].id).toBe("opacity-slider");
     await click($('button[aria-label="設定"]'));
     await click($('[aria-label="設定"] [aria-label="文字を大きく"]'));
     expect(document.documentElement.style.getPropertyValue("--font-size")).toBe("16px");
@@ -202,6 +207,8 @@ describe("App", () => {
     // 編集を始めてもコピーしない
     expect(invoke).not.toHaveBeenCalledWith("copy_preset", expect.anything());
     const form = $('form[aria-label="プリセットを編集"]');
+    // 編集中も一覧は見えていて、編集中の行に印が付く
+    expect($(".preset-leaf.editing").textContent).toContain("朝");
     await type(form.querySelector('[aria-label="名前"]'), "おはよう");
     await type(form.querySelector('[aria-label="文字"]'), "おはようございます!");
     await act(async () => {
@@ -226,12 +233,15 @@ describe("App", () => {
     await click($("#footer .footer-btn"));
     await click([...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent.includes("プリセット")));
     const form = $('form[aria-label="プリセットを作成"]');
+    // 作成中も元のプリセットは隠れない
+    expect($(".preset-leaf").textContent).toContain("朝");
     await type(form.querySelector('[aria-label="名前"]'), "署名");
     await type(form.querySelector('[aria-label="文字"]'), "山田\n太郎");
     await act(async () => form.requestSubmit());
     await act(async () => {});
     expect(invoke).toHaveBeenCalledWith("create_preset", { folder: [], name: "署名", text: "山田\n太郎" });
 
+    await act(async () => {});
     await click([...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent.includes("フォルダー")));
     const folderForm = $('form[aria-label="フォルダーを作成"]');
     expect(folderForm.querySelector("textarea")).toBeNull();
@@ -273,7 +283,9 @@ describe("App", () => {
 
   it("プリセットのファイルの場所をエクスプローラーで表示できる", async () => {
     await click($("#footer .footer-btn"));
-    await click([...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent === "場所"));
+    const buttons = [...root.querySelectorAll(".presets-footer button")];
+    expect(buttons.map((b) => b.textContent)).not.toContain("ファイル");
+    await click(buttons.find((b) => b.textContent === "場所"));
     expect(invoke).toHaveBeenCalledWith("reveal_presets_file");
   });
 });

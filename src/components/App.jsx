@@ -327,7 +327,6 @@ export function App() {
           }}
           call={call}
           onReload={loadPresets}
-          onOpenFile={() => runOrToast(() => invoke("open_presets_file"))}
           onRevealFile={() => runOrToast(() => invoke("reveal_presets_file"))}
           onClose={() => setPresetsOpen(false)}
         />

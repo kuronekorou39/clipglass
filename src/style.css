@@ -33,7 +33,8 @@
   --grip-corner: 14px;
   /* 上辺はタイトルバーの上の余白(ボタンまでの距離)に収める */
   --grip-top: 4px;
-  --titlebar-height: 32px;
+  /* 移動でよくつかむので太めに */
+  --titlebar-height: 40px;
   --footer-height: 34px;
 }
 
@@ -109,6 +110,14 @@ button {
   display: flex;
   align-items: center;
   gap: 2px;
+}
+
+/* 読み取りの停止は表示の操作と意味が違うので、線で分ける */
+.titlebar-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 6px;
+  background: var(--border-light);
 }
 
 .titlebar-btn {
@@ -528,8 +537,9 @@ button {
   position: absolute;
   left: 6px;
   right: 12px;
+  /* 中身やフォルダーの開閉で大きさが変わらないよう、上下の位置を決めておく */
+  top: calc(var(--titlebar-height) + 6px);
   bottom: calc(var(--footer-height) + 2px);
-  max-height: calc(100% - var(--titlebar-height) - var(--footer-height) - 12px);
   display: flex;
   flex-direction: column;
   background: var(--bg-solid);
@@ -610,6 +620,19 @@ button {
 
 .preset-leaf:hover {
   background: var(--bg-hover);
+}
+
+/* 編集している行 */
+.preset-leaf.editing,
+.preset-folder > summary.editing {
+  background: var(--bg-hover);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.preset-leaf.editing .icon-btn,
+.preset-folder > summary.editing .icon-btn {
+  opacity: 1;
+  color: var(--accent);
 }
 
 .preset-name {
@@ -971,12 +994,17 @@ button {
 }
 
 /* === Preset editor === */
+/* 一覧の下に出す。一覧が見えるよう、高さは枠の6割まで */
 .preset-editor {
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 0.5em;
+  max-height: 60%;
   padding: 0.6em;
   overflow-y: auto;
+  border-top: 1px solid var(--border-light);
+  background: var(--bg-solid);
   font-size: 12px;
 }
 
