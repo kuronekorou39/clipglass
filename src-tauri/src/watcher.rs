@@ -19,7 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::clipboard::{self, Payload};
-use crate::history::{Content, Probe, Status, StoredImage};
+use crate::history::{Content, History, Probe, Status, StoredImage};
 use crate::imaging::{self, DecodeError, RawImage};
 use crate::limits::CLIPBOARD_SETTLE_DELAY_MS;
 use crate::AppState;
@@ -53,48 +53,68 @@ fn set_status(app: &AppHandle, status: Status) {
         .set_status(status);
 }
 
-fn record_files(app: &AppHandle, paths: Vec<String>, formats: Vec<String>) {
-    let now = now_ms();
-    let state = app.state::<AppState>();
-    let mut history = state.history.lock().unwrap();
-    if !history.promote(&Probe::Files(&paths), &formats, now) {
-        history.insert(Content::Files(paths), formats, now);
+/// 読み取ったペイロードを履歴または状態へ反映する。OSにもAppHandleにも触れないので
+/// 単体テストできる。呼び出し側が履歴のロックを渡す。
+fn ingest(history: &mut History, formats: Vec<String>, payload: Payload, now: u64) {
+    match payload {
+        Payload::Empty => history.set_status(Status::Empty),
+        Payload::Text { text, rich } => history.record_text(text, rich, formats, now),
+        Payload::Files(paths) => {
+            if !history.promote(&Probe::Files(&paths), &formats, now) {
+                history.insert(Content::Files(paths), formats, now);
+            }
+        }
+        Payload::Unsupported => history.set_status(Status::Unsupported { formats }),
+        Payload::TooLarge => history.set_status(Status::TooLarge { formats }),
+        Payload::Image(raw) => ingest_image(history, raw, formats, now),
     }
 }
 
-fn record_image(app: &AppHandle, raw: RawImage, formats: Vec<String>) -> Result<(), DecodeError> {
-    let image = imaging::decode(&raw)?;
+fn ingest_image(history: &mut History, raw: RawImage, formats: Vec<String>, now: u64) {
+    let image = match imaging::decode(&raw) {
+        Ok(image) => image,
+        Err(DecodeError::TooLarge) => {
+            history.set_status(Status::TooLarge { formats });
+            return;
+        }
+        Err(DecodeError::Invalid(message)) => {
+            history.set_status(Status::Error { message });
+            return;
+        }
+    };
     let hash = imaging::hash_image(&image);
-    let state = app.state::<AppState>();
-    if state
-        .history
-        .lock()
-        .unwrap()
-        .promote(&Probe::Image(hash), &formats, now_ms())
-    {
-        return Ok(());
+    // 同じ画像なら、重いPNG化をせずに先頭へ移すだけ。
+    if history.promote(&Probe::Image(hash), &formats, now) {
+        return;
     }
-
-    // PNG化とサムネイル生成は重いので、履歴のロックを持たずに行う。
     let png = match raw {
         RawImage::Png(bytes) => bytes,
-        RawImage::Dib(_) => imaging::encode_png(&image).map_err(DecodeError::Invalid)?,
+        RawImage::Dib(_) => match imaging::encode_png(&image) {
+            Ok(png) => png,
+            Err(message) => {
+                history.set_status(Status::Error { message });
+                return;
+            }
+        },
     };
-    let thumbnail =
-        imaging::encode_png(&imaging::thumbnail(&image)).map_err(DecodeError::Invalid)?;
-    let content = Content::Image(StoredImage {
-        png: Arc::new(png),
-        thumbnail: Arc::new(thumbnail),
-        width: image.width(),
-        height: image.height(),
-        hash,
-    });
-    state
-        .history
-        .lock()
-        .unwrap()
-        .insert(content, formats, now_ms());
-    Ok(())
+    let thumbnail = match imaging::encode_png(&imaging::thumbnail(&image)) {
+        Ok(thumbnail) => thumbnail,
+        Err(message) => {
+            history.set_status(Status::Error { message });
+            return;
+        }
+    };
+    history.insert(
+        Content::Image(StoredImage {
+            png: Arc::new(png),
+            thumbnail: Arc::new(thumbnail),
+            width: image.width(),
+            height: image.height(),
+            hash,
+        }),
+        formats,
+        now,
+    );
 }
 
 pub fn emit_state(app: &AppHandle) {
@@ -106,30 +126,21 @@ pub fn emit_state(app: &AppHandle) {
 
 /// 現在のクリップボードを読み取り、履歴または状態へ反映してUIへ通知する。
 fn refresh(app: &AppHandle, hwnd: HWND) {
+    let state = app.state::<AppState>();
     match clipboard::read(hwnd) {
-        Err(message) => set_status(app, Status::Error { message }),
+        Err(message) => state
+            .history
+            .lock()
+            .unwrap()
+            .set_status(Status::Error { message }),
         Ok(snapshot) => {
             LAST_SEQUENCE.store(snapshot.sequence, Ordering::Relaxed);
-            let formats = snapshot.formats;
-            match snapshot.payload {
-                Payload::Empty => set_status(app, Status::Empty),
-                Payload::Text { text, rich } => app
-                    .state::<AppState>()
-                    .history
-                    .lock()
-                    .unwrap()
-                    .record_text(text, rich, formats, now_ms()),
-                Payload::Image(raw) => match record_image(app, raw, formats.clone()) {
-                    Ok(()) => {}
-                    Err(DecodeError::TooLarge) => set_status(app, Status::TooLarge { formats }),
-                    Err(DecodeError::Invalid(message)) => {
-                        set_status(app, Status::Error { message })
-                    }
-                },
-                Payload::Files(paths) => record_files(app, paths, formats),
-                Payload::Unsupported => set_status(app, Status::Unsupported { formats }),
-                Payload::TooLarge => set_status(app, Status::TooLarge { formats }),
-            }
+            ingest(
+                &mut state.history.lock().unwrap(),
+                snapshot.formats,
+                snapshot.payload,
+                now_ms(),
+            );
         }
     }
     crate::history_changed(app);
@@ -267,4 +278,108 @@ pub fn spawn(app: AppHandle) {
             emit_state(&app);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+
+    fn text(body: &str) -> Payload {
+        Payload::Text {
+            text: body.to_string(),
+            rich: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn text_is_recorded_and_duplicates_only_promote() {
+        let mut history = History::default();
+        ingest(&mut history, Vec::new(), text("a"), 1);
+        ingest(&mut history, Vec::new(), text("a"), 2);
+        let view = history.view(false);
+        assert_eq!(view.items.len(), 1);
+        assert_eq!(view.items[0].kind, "text");
+    }
+
+    #[test]
+    fn files_are_recorded() {
+        let mut history = History::default();
+        ingest(
+            &mut history,
+            Vec::new(),
+            Payload::Files(vec!["C:\\a.txt".to_string()]),
+            1,
+        );
+        assert_eq!(history.view(false).items[0].kind, "files");
+    }
+
+    #[test]
+    fn empty_unsupported_and_too_large_set_status() {
+        let mut history = History::default();
+        ingest(&mut history, Vec::new(), Payload::Empty, 1);
+        assert!(matches!(history.view(false).status, Some(Status::Empty)));
+
+        ingest(&mut history, vec!["X".to_string()], Payload::Unsupported, 2);
+        assert!(matches!(
+            history.view(false).status,
+            Some(Status::Unsupported { .. })
+        ));
+
+        ingest(&mut history, Vec::new(), Payload::TooLarge, 3);
+        assert!(matches!(
+            history.view(false).status,
+            Some(Status::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn valid_image_is_stored_with_dimensions_and_dedups() {
+        let mut history = History::default();
+        let image = RgbaImage::from_pixel(2, 3, Rgba([10, 20, 30, 255]));
+        let dib = || Payload::Image(RawImage::Dib(imaging::to_dib(&image)));
+        ingest(&mut history, Vec::new(), dib(), 1);
+        let view = history.view(false);
+        assert_eq!(view.items[0].kind, "image");
+        assert_eq!(view.items[0].width, Some(2));
+        assert_eq!(view.items[0].height, Some(3));
+        // 同じ画像は増やさず、先頭へ移すだけ
+        ingest(&mut history, Vec::new(), dib(), 2);
+        assert_eq!(history.view(false).items.len(), 1);
+    }
+
+    #[test]
+    fn oversized_image_sets_too_large_status() {
+        let mut history = History::default();
+        // BITMAPINFOHEADER(40バイト)に巨大な寸法を宣言したDIB
+        let mut dib = vec![0u8; 40];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&8000i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&8000i32.to_le_bytes());
+        ingest(
+            &mut history,
+            vec!["CF_DIB".to_string()],
+            Payload::Image(RawImage::Dib(dib)),
+            1,
+        );
+        assert!(matches!(
+            history.view(false).status,
+            Some(Status::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn corrupt_image_sets_error_status() {
+        let mut history = History::default();
+        ingest(
+            &mut history,
+            Vec::new(),
+            Payload::Image(RawImage::Png(vec![0u8; 16])),
+            1,
+        );
+        assert!(matches!(
+            history.view(false).status,
+            Some(Status::Error { .. })
+        ));
+    }
 }

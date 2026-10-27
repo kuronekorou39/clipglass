@@ -72,28 +72,28 @@ pub enum Status {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemView {
-    id: u64,
-    kind: &'static str,
-    text: Option<String>,
-    char_count: Option<usize>,
-    truncated: bool,
-    width: Option<u32>,
-    height: Option<u32>,
-    paths: Option<Vec<String>>,
-    formats: Vec<String>,
+    pub id: u64,
+    pub kind: &'static str,
+    pub text: Option<String>,
+    pub char_count: Option<usize>,
+    pub truncated: bool,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub paths: Option<Vec<String>>,
+    pub formats: Vec<String>,
     /// 保存してある書式付きデータの形式名。再コピーで復元できるもの。
-    stored_rich: Vec<String>,
-    pinned: bool,
-    updated_at: u64,
+    pub stored_rich: Vec<String>,
+    pub pinned: bool,
+    pub updated_at: u64,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StateView {
-    paused: bool,
-    status: Option<Status>,
-    current_id: Option<u64>,
-    items: Vec<ItemView>,
+    pub paused: bool,
+    pub status: Option<Status>,
+    pub current_id: Option<u64>,
+    pub items: Vec<ItemView>,
 }
 
 pub struct History {

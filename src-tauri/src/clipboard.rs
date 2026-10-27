@@ -142,10 +142,23 @@ unsafe fn read_bytes(format: u32, limit: usize) -> Result<Option<Vec<u8>>, Strin
     Ok(Some(bytes))
 }
 
-unsafe fn read_text() -> Result<Option<String>, String> {
-    let Some(bytes) = read_bytes(CF_UNICODETEXT, MAX_TEXT_BYTES)? else {
-        return Ok(None);
-    };
+/// クリップボードの生データの読み取り口。実機は `WinClipboard`、テストは差し替える。
+/// どのメソッドも、クリップボードが開かれている間に呼ぶ前提。
+pub trait ClipboardSource {
+    /// 利用できる形式のID(コピー元が置いた順)。
+    fn formats(&self) -> Vec<u32>;
+    /// 形式IDの表示名。
+    fn format_name(&self, id: u32) -> String;
+    /// 登録形式(例: "PNG")のID。
+    fn registered_format(&self, name: &str) -> u32;
+    /// 指定形式のデータ。`limit` を超える場合は `None`。
+    fn read(&self, id: u32, limit: usize) -> Result<Option<Vec<u8>>, String>;
+    /// CF_HDROP のファイル名の並び。
+    fn file_names(&self) -> Result<Vec<String>, String>;
+}
+
+/// UTF-16のバイト列を、最初のヌル文字までの文字列にする。
+fn decode_text_bytes(bytes: &[u8]) -> String {
     let units: Vec<u16> = bytes
         .as_chunks::<2>()
         .0
@@ -153,17 +166,33 @@ unsafe fn read_text() -> Result<Option<String>, String> {
         .map(|pair| u16::from_le_bytes(*pair))
         .take_while(|unit| *unit != 0)
         .collect();
-    Ok(Some(String::from_utf16_lossy(&units)))
+    String::from_utf16_lossy(&units)
+}
+
+/// テキストと一緒に保存する書式付き形式かどうか。
+fn is_rich_format(name: &str) -> bool {
+    RICH_FORMAT_NAMES.contains(&name)
+}
+
+/// 書式付きデータを要求してよい大きさか。大きいコピーでは要求せず、コピー元を待たせない。
+fn wants_rich(text: &str) -> bool {
+    text.encode_utf16().count() * UTF16_UNIT_BYTES <= RICH_CAPTURE_MAX_TEXT_BYTES
+}
+
+fn read_text(src: &impl ClipboardSource) -> Result<Option<String>, String> {
+    Ok(src
+        .read(CF_UNICODETEXT, MAX_TEXT_BYTES)?
+        .map(|bytes| decode_text_bytes(&bytes)))
 }
 
 /// 書式付きデータを読み取る。読めない形式や大きすぎる形式は黙って飛ばす。
-unsafe fn read_rich(ids: &[u32], formats: &[String]) -> Vec<RichFormat> {
+fn read_rich(src: &impl ClipboardSource, ids: &[u32], formats: &[String]) -> Vec<RichFormat> {
     let mut rich = Vec::new();
     for (id, name) in ids.iter().zip(formats) {
-        if !RICH_FORMAT_NAMES.contains(&name.as_str()) {
+        if !is_rich_format(name) {
             continue;
         }
-        if let Ok(Some(data)) = read_bytes(*id, MAX_RICH_BYTES) {
+        if let Ok(Some(data)) = src.read(*id, MAX_RICH_BYTES) {
             rich.push(RichFormat {
                 name: name.clone(),
                 data,
@@ -171,6 +200,55 @@ unsafe fn read_rich(ids: &[u32], formats: &[String]) -> Vec<RichFormat> {
         }
     }
     rich
+}
+
+/// 利用できる形式から、読み取るペイロードを決める。OSに触れない純粋な判定。
+fn read_payload(src: &impl ClipboardSource) -> Result<(Vec<String>, Payload), String> {
+    let ids = src.formats();
+    let formats: Vec<String> = ids.iter().map(|&id| src.format_name(id)).collect();
+    if ids.is_empty() {
+        return Ok((formats, Payload::Empty));
+    }
+
+    // テキストがあればテキストを優先する(Excelのセル範囲など)。
+    if ids.contains(&CF_UNICODETEXT) {
+        match read_text(src)? {
+            None => return Ok((formats, Payload::TooLarge)),
+            Some(text) if !text.is_empty() => {
+                let rich = if wants_rich(&text) {
+                    read_rich(src, &ids, &formats)
+                } else {
+                    Vec::new()
+                };
+                return Ok((formats, Payload::Text { text, rich }));
+            }
+            Some(_) => {}
+        }
+    }
+
+    // DIBとDIBV5は一方からもう一方が自動合成される。合成された側は
+    // アルファ値が信用できないので、コピー元が先に置いた方を読む。
+    let png = src.registered_format("PNG");
+    let image_format = if ids.contains(&png) {
+        Some(png)
+    } else {
+        ids.iter()
+            .copied()
+            .find(|id| *id == CF_DIB || *id == CF_DIBV5)
+    };
+    if let Some(format) = image_format {
+        let payload = match src.read(format, MAX_IMAGE_BYTES)? {
+            None => Payload::TooLarge,
+            Some(bytes) if format == png => Payload::Image(RawImage::Png(bytes)),
+            Some(bytes) => Payload::Image(RawImage::Dib(bytes)),
+        };
+        return Ok((formats, payload));
+    }
+
+    if ids.contains(&CF_HDROP) {
+        return Ok((formats, Payload::Files(src.file_names()?)));
+    }
+    Ok((formats, Payload::Unsupported))
 }
 
 unsafe fn read_file_names() -> Result<Vec<String>, String> {
@@ -188,56 +266,30 @@ unsafe fn read_file_names() -> Result<Vec<String>, String> {
     Ok(names)
 }
 
-unsafe fn read_once(owner: HWND) -> Result<(Vec<String>, Payload), String> {
+/// 実機のクリップボード。`read_once` が `OpenClipboardGuard` を保持している間だけ使う。
+struct WinClipboard;
+
+impl ClipboardSource for WinClipboard {
+    fn formats(&self) -> Vec<u32> {
+        unsafe { enum_formats() }
+    }
+    fn format_name(&self, id: u32) -> String {
+        format_name(id)
+    }
+    fn registered_format(&self, name: &str) -> u32 {
+        unsafe { RegisterClipboardFormatW(&HSTRING::from(name)) }
+    }
+    fn read(&self, id: u32, limit: usize) -> Result<Option<Vec<u8>>, String> {
+        unsafe { read_bytes(id, limit) }
+    }
+    fn file_names(&self) -> Result<Vec<String>, String> {
+        unsafe { read_file_names() }
+    }
+}
+
+fn read_once(owner: HWND) -> Result<(Vec<String>, Payload), String> {
     let _guard = OpenClipboardGuard::open(owner)?;
-    let ids = enum_formats();
-    let formats: Vec<String> = ids.iter().copied().map(format_name).collect();
-    if ids.is_empty() {
-        return Ok((formats, Payload::Empty));
-    }
-
-    // テキストがあればテキストを優先する(Excelのセル範囲など)。
-    if ids.contains(&CF_UNICODETEXT) {
-        match read_text()? {
-            None => return Ok((formats, Payload::TooLarge)),
-            Some(text) if !text.is_empty() => {
-                // 大きなコピーでは書式付きデータを要求しない(コピー元を待たせないため)。
-                let small =
-                    text.encode_utf16().count() * UTF16_UNIT_BYTES <= RICH_CAPTURE_MAX_TEXT_BYTES;
-                let rich = if small {
-                    read_rich(&ids, &formats)
-                } else {
-                    Vec::new()
-                };
-                return Ok((formats, Payload::Text { text, rich }));
-            }
-            Some(_) => {}
-        }
-    }
-
-    // DIBとDIBV5は一方からもう一方が自動合成される。合成された側は
-    // アルファ値が信用できないので、コピー元が先に置いた方を読む。
-    let png = RegisterClipboardFormatW(w!("PNG"));
-    let image_format = if ids.contains(&png) {
-        Some(png)
-    } else {
-        ids.iter()
-            .copied()
-            .find(|id| *id == CF_DIB || *id == CF_DIBV5)
-    };
-    if let Some(format) = image_format {
-        let payload = match read_bytes(format, MAX_IMAGE_BYTES)? {
-            None => Payload::TooLarge,
-            Some(bytes) if format == png => Payload::Image(RawImage::Png(bytes)),
-            Some(bytes) => Payload::Image(RawImage::Dib(bytes)),
-        };
-        return Ok((formats, payload));
-    }
-
-    if ids.contains(&CF_HDROP) {
-        return Ok((formats, Payload::Files(read_file_names()?)));
-    }
-    Ok((formats, Payload::Unsupported))
+    read_payload(&WinClipboard)
 }
 
 /// 現在の内容を読み取る。読み取り中に内容が変わった場合は取り直す。
@@ -246,7 +298,7 @@ pub fn read(owner: HWND) -> Result<Snapshot, String> {
     loop {
         attempt += 1;
         let sequence = unsafe { GetClipboardSequenceNumber() };
-        let (formats, payload) = unsafe { read_once(owner)? };
+        let (formats, payload) = read_once(owner)?;
         let unchanged = unsafe { GetClipboardSequenceNumber() } == sequence;
         if unchanged || attempt >= READ_RETRY_COUNT {
             return Ok(Snapshot {
@@ -396,6 +448,172 @@ mod tests {
             String::from_utf16_lossy(&units),
             "\\\\srv\\共有\\a.txt\0\\\\srv\\共有\\b.txt\0\0"
         );
+    }
+
+    use std::collections::HashMap;
+
+    const PNG_ID: u32 = 49_999;
+    const HTML_ID: u32 = 49_001;
+
+    /// テスト用のクリップボード。形式とデータを持ち、OSには触れない。
+    struct Fake {
+        ids: Vec<u32>,
+        names: HashMap<u32, String>,
+        data: HashMap<u32, Option<Vec<u8>>>,
+        files: Vec<String>,
+    }
+
+    impl Fake {
+        fn new(ids: &[u32]) -> Self {
+            Fake {
+                ids: ids.to_vec(),
+                names: HashMap::new(),
+                data: HashMap::new(),
+                files: Vec::new(),
+            }
+        }
+        fn name(mut self, id: u32, name: &str) -> Self {
+            self.names.insert(id, name.to_string());
+            self
+        }
+        /// None は「上限を超えて読めない」を表す。
+        fn bytes(mut self, id: u32, data: Option<&[u8]>) -> Self {
+            self.data.insert(id, data.map(|d| d.to_vec()));
+            self
+        }
+        fn with_files(mut self, files: &[&str]) -> Self {
+            self.files = files.iter().map(|f| f.to_string()).collect();
+            self
+        }
+    }
+
+    impl ClipboardSource for Fake {
+        fn formats(&self) -> Vec<u32> {
+            self.ids.clone()
+        }
+        fn format_name(&self, id: u32) -> String {
+            self.names
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| format!("0x{id:04X}"))
+        }
+        fn registered_format(&self, name: &str) -> u32 {
+            if name == "PNG" {
+                PNG_ID
+            } else {
+                0
+            }
+        }
+        fn read(&self, id: u32, _limit: usize) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.data.get(&id).cloned().unwrap_or(None))
+        }
+        fn file_names(&self) -> Result<Vec<String>, String> {
+            Ok(self.files.clone())
+        }
+    }
+
+    fn utf16(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    #[test]
+    fn no_formats_is_empty() {
+        let (_, payload) = read_payload(&Fake::new(&[])).unwrap();
+        assert!(matches!(payload, Payload::Empty));
+    }
+
+    #[test]
+    fn text_is_preferred_and_small_text_keeps_rich() {
+        let fake = Fake::new(&[CF_UNICODETEXT, HTML_ID, CF_DIB])
+            .name(HTML_ID, "HTML Format")
+            .bytes(CF_UNICODETEXT, Some(&utf16("こんにちは")))
+            .bytes(HTML_ID, Some(b"<b>hi</b>"))
+            .bytes(CF_DIB, Some(&[0u8; 60]));
+        let (_, payload) = read_payload(&fake).unwrap();
+        match payload {
+            Payload::Text { text, rich } => {
+                assert_eq!(text, "こんにちは");
+                assert_eq!(rich.len(), 1);
+                assert_eq!(rich[0].name, "HTML Format");
+            }
+            _ => panic!("テキストにならなかった"),
+        }
+    }
+
+    #[test]
+    fn large_text_skips_rich() {
+        let big = "a".repeat(RICH_CAPTURE_MAX_TEXT_BYTES / UTF16_UNIT_BYTES + 1);
+        let fake = Fake::new(&[CF_UNICODETEXT, HTML_ID])
+            .name(HTML_ID, "HTML Format")
+            .bytes(CF_UNICODETEXT, Some(&utf16(&big)))
+            .bytes(HTML_ID, Some(b"<b>hi</b>"));
+        let (_, payload) = read_payload(&fake).unwrap();
+        match payload {
+            Payload::Text { text, rich } => {
+                assert_eq!(text.len(), big.len());
+                assert!(rich.is_empty());
+            }
+            _ => panic!("テキストにならなかった"),
+        }
+    }
+
+    #[test]
+    fn text_over_limit_is_too_large() {
+        let fake = Fake::new(&[CF_UNICODETEXT]).bytes(CF_UNICODETEXT, None);
+        let (_, payload) = read_payload(&fake).unwrap();
+        assert!(matches!(payload, Payload::TooLarge));
+    }
+
+    #[test]
+    fn empty_text_falls_through_to_unsupported() {
+        // 文字が空のときは画像やファイルを探し、どれも無ければ対象外にする
+        let fake = Fake::new(&[CF_UNICODETEXT]).bytes(CF_UNICODETEXT, Some(&utf16("")));
+        let (_, payload) = read_payload(&fake).unwrap();
+        assert!(matches!(payload, Payload::Unsupported));
+    }
+
+    #[test]
+    fn png_is_preferred_over_dib() {
+        let fake = Fake::new(&[CF_DIB, PNG_ID])
+            .bytes(PNG_ID, Some(&[1, 2, 3]))
+            .bytes(CF_DIB, Some(&[9, 9]));
+        let (_, payload) = read_payload(&fake).unwrap();
+        assert!(matches!(payload, Payload::Image(RawImage::Png(b)) if b == [1, 2, 3]));
+    }
+
+    #[test]
+    fn first_of_dib_and_dibv5_is_read_when_no_png() {
+        // コピー元が先に置いた方(ここではDIBV5)を読む
+        let fake = Fake::new(&[CF_DIBV5, CF_DIB])
+            .bytes(CF_DIBV5, Some(&[5]))
+            .bytes(CF_DIB, Some(&[8]));
+        let (_, payload) = read_payload(&fake).unwrap();
+        assert!(matches!(payload, Payload::Image(RawImage::Dib(b)) if b == [5]));
+    }
+
+    #[test]
+    fn image_over_limit_is_too_large() {
+        let fake = Fake::new(&[PNG_ID]).bytes(PNG_ID, None);
+        let (_, payload) = read_payload(&fake).unwrap();
+        assert!(matches!(payload, Payload::TooLarge));
+    }
+
+    #[test]
+    fn hdrop_becomes_files() {
+        let fake = Fake::new(&[CF_HDROP]).with_files(&["C:\\a.txt", "C:\\b.txt"]);
+        let (_, payload) = read_payload(&fake).unwrap();
+        assert!(matches!(payload, Payload::Files(f) if f.len() == 2));
+    }
+
+    #[test]
+    fn unknown_format_is_unsupported() {
+        let fake = Fake::new(&[0x4242]).name(0x4242, "Something");
+        let (formats, payload) = read_payload(&fake).unwrap();
+        assert_eq!(formats, ["Something"]);
+        assert!(matches!(payload, Payload::Unsupported));
     }
 
     #[test]
