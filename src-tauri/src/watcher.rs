@@ -2,7 +2,7 @@
 //! クリップボードへのアクセスは、書き戻しも含めてこのスレッドに集める。
 
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -19,10 +19,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::clipboard::{self, Payload};
-use crate::history::{Content, History, Probe, Status, StoredImage};
+use crate::history::{Content, History, Probe, RichFormat, Status, StoredImage};
 use crate::imaging::{self, DecodeError, RawImage};
 use crate::limits::CLIPBOARD_SETTLE_DELAY_MS;
 use crate::AppState;
+use image::RgbaImage;
 
 /// 履歴の項目をクリップボードへ書き戻す要求。
 /// wParamに項目ID、lParamに書式を落とすかどうか(0以外で文字だけ)を入れる。
@@ -55,66 +56,120 @@ fn set_status(app: &AppHandle, status: Status) {
 
 /// 読み取ったペイロードを履歴または状態へ反映する。OSにもAppHandleにも触れないので
 /// 単体テストできる。呼び出し側が履歴のロックを渡す。
-fn ingest(history: &mut History, formats: Vec<String>, payload: Payload, now: u64) {
+/// 取り込む準備ができたもの。履歴にもロックにも触れない純粋な結果。
+/// 画像はここでデコードまで済ませ、重いPNG化はまだ行わない(ロックの外で行うため)。
+enum Prepared {
+    Status(Status),
+    Text {
+        text: String,
+        rich: Vec<RichFormat>,
+        formats: Vec<String>,
+    },
+    Files {
+        paths: Vec<String>,
+        formats: Vec<String>,
+    },
+    Image {
+        image: RgbaImage,
+        raw: RawImage,
+        hash: u64,
+        formats: Vec<String>,
+    },
+}
+
+/// 読み取ったペイロードを、履歴へ入れる前の形に整える。OSにもロックにも触れない。
+fn prepare(formats: Vec<String>, payload: Payload) -> Prepared {
     match payload {
-        Payload::Empty => history.set_status(Status::Empty),
-        Payload::Text { text, rich } => history.record_text(text, rich, formats, now),
-        Payload::Files(paths) => {
+        Payload::Empty => Prepared::Status(Status::Empty),
+        Payload::Unsupported => Prepared::Status(Status::Unsupported { formats }),
+        Payload::TooLarge => Prepared::Status(Status::TooLarge { formats }),
+        Payload::Text { text, rich } => Prepared::Text {
+            text,
+            rich,
+            formats,
+        },
+        Payload::Files(paths) => Prepared::Files { paths, formats },
+        Payload::Image(raw) => match imaging::decode(&raw) {
+            Ok(image) => {
+                let hash = imaging::hash_image(&image);
+                Prepared::Image {
+                    image,
+                    raw,
+                    hash,
+                    formats,
+                }
+            }
+            Err(DecodeError::TooLarge) => Prepared::Status(Status::TooLarge { formats }),
+            Err(DecodeError::Invalid(message)) => Prepared::Status(Status::Error { message }),
+        },
+    }
+}
+
+/// デコード済みの画像を、保存する形(PNG・サムネイル)に符号化する。重いのでロックの外で呼ぶ。
+/// PNGとして受け取っていればそのまま使い、DIBのときだけPNGへ符号化する。
+fn encode_image(raw: RawImage, image: &RgbaImage, hash: u64) -> Result<StoredImage, String> {
+    let png = match raw {
+        RawImage::Png(bytes) => bytes,
+        RawImage::Dib(_) => imaging::encode_png(image)?,
+    };
+    let thumbnail = imaging::encode_png(&imaging::thumbnail(image))?;
+    Ok(StoredImage {
+        png: Arc::new(png),
+        thumbnail: Arc::new(thumbnail),
+        width: image.width(),
+        height: image.height(),
+        hash,
+    })
+}
+
+/// 読み取った内容を履歴または状態へ反映する。重いPNG化は履歴のロックを持たずに行い、
+/// ロックは「同じ画像かの確認」と「挿入・状態の更新」の一瞬だけ握る。
+fn apply(history: &Mutex<History>, formats: Vec<String>, payload: Payload, now: u64) {
+    match prepare(formats, payload) {
+        Prepared::Status(status) => history.lock().unwrap().set_status(status),
+        Prepared::Text {
+            text,
+            rich,
+            formats,
+        } => history
+            .lock()
+            .unwrap()
+            .record_text(text, rich, formats, now),
+        Prepared::Files { paths, formats } => {
+            let mut history = history.lock().unwrap();
             if !history.promote(&Probe::Files(&paths), &formats, now) {
                 history.insert(Content::Files(paths), formats, now);
             }
         }
-        Payload::Unsupported => history.set_status(Status::Unsupported { formats }),
-        Payload::TooLarge => history.set_status(Status::TooLarge { formats }),
-        Payload::Image(raw) => ingest_image(history, raw, formats, now),
-    }
-}
-
-fn ingest_image(history: &mut History, raw: RawImage, formats: Vec<String>, now: u64) {
-    let image = match imaging::decode(&raw) {
-        Ok(image) => image,
-        Err(DecodeError::TooLarge) => {
-            history.set_status(Status::TooLarge { formats });
-            return;
-        }
-        Err(DecodeError::Invalid(message)) => {
-            history.set_status(Status::Error { message });
-            return;
-        }
-    };
-    let hash = imaging::hash_image(&image);
-    // 同じ画像なら、重いPNG化をせずに先頭へ移すだけ。
-    if history.promote(&Probe::Image(hash), &formats, now) {
-        return;
-    }
-    let png = match raw {
-        RawImage::Png(bytes) => bytes,
-        RawImage::Dib(_) => match imaging::encode_png(&image) {
-            Ok(png) => png,
-            Err(message) => {
-                history.set_status(Status::Error { message });
+        Prepared::Image {
+            image,
+            raw,
+            hash,
+            formats,
+        } => {
+            // 同じ画像なら、重いPNG化をせずに先頭へ移すだけ(ロックは一瞬)。
+            if history
+                .lock()
+                .unwrap()
+                .promote(&Probe::Image(hash), &formats, now)
+            {
                 return;
             }
-        },
-    };
-    let thumbnail = match imaging::encode_png(&imaging::thumbnail(&image)) {
-        Ok(thumbnail) => thumbnail,
-        Err(message) => {
-            history.set_status(Status::Error { message });
-            return;
+            // PNG化とサムネイル生成はロックの外で行う。
+            match encode_image(raw, &image, hash) {
+                Ok(stored) => {
+                    history
+                        .lock()
+                        .unwrap()
+                        .insert(Content::Image(stored), formats, now);
+                }
+                Err(message) => history
+                    .lock()
+                    .unwrap()
+                    .set_status(Status::Error { message }),
+            }
         }
-    };
-    history.insert(
-        Content::Image(StoredImage {
-            png: Arc::new(png),
-            thumbnail: Arc::new(thumbnail),
-            width: image.width(),
-            height: image.height(),
-            hash,
-        }),
-        formats,
-        now,
-    );
+    }
 }
 
 pub fn emit_state(app: &AppHandle) {
@@ -135,12 +190,7 @@ fn refresh(app: &AppHandle, hwnd: HWND) {
             .set_status(Status::Error { message }),
         Ok(snapshot) => {
             LAST_SEQUENCE.store(snapshot.sequence, Ordering::Relaxed);
-            ingest(
-                &mut state.history.lock().unwrap(),
-                snapshot.formats,
-                snapshot.payload,
-                now_ms(),
-            );
+            apply(&state.history, snapshot.formats, snapshot.payload, now_ms());
         }
     }
     crate::history_changed(app);
@@ -284,101 +334,145 @@ pub fn spawn(app: AppHandle) {
 mod tests {
     use super::*;
     use image::{Rgba, RgbaImage};
+    use std::sync::Mutex;
 
-    fn text(body: &str) -> Payload {
-        Payload::Text {
-            text: body.to_string(),
-            rich: Vec::new(),
-        }
+    fn sample() -> RgbaImage {
+        RgbaImage::from_pixel(2, 3, Rgba([10, 20, 30, 255]))
     }
 
-    #[test]
-    fn text_is_recorded_and_duplicates_only_promote() {
-        let mut history = History::default();
-        ingest(&mut history, Vec::new(), text("a"), 1);
-        ingest(&mut history, Vec::new(), text("a"), 2);
-        let view = history.view(false);
-        assert_eq!(view.items.len(), 1);
-        assert_eq!(view.items[0].kind, "text");
+    fn dib_payload() -> Payload {
+        Payload::Image(RawImage::Dib(imaging::to_dib(&sample())))
     }
 
-    #[test]
-    fn files_are_recorded() {
-        let mut history = History::default();
-        ingest(
-            &mut history,
-            Vec::new(),
-            Payload::Files(vec!["C:\\a.txt".to_string()]),
-            1,
-        );
-        assert_eq!(history.view(false).items[0].kind, "files");
-    }
+    // --- prepare: OSにもロックにも触れない判定(デコードを含む) ---
 
     #[test]
-    fn empty_unsupported_and_too_large_set_status() {
-        let mut history = History::default();
-        ingest(&mut history, Vec::new(), Payload::Empty, 1);
-        assert!(matches!(history.view(false).status, Some(Status::Empty)));
-
-        ingest(&mut history, vec!["X".to_string()], Payload::Unsupported, 2);
+    fn prepare_maps_each_payload() {
         assert!(matches!(
-            history.view(false).status,
-            Some(Status::Unsupported { .. })
+            prepare(vec![], Payload::Empty),
+            Prepared::Status(Status::Empty)
         ));
-
-        ingest(&mut history, Vec::new(), Payload::TooLarge, 3);
         assert!(matches!(
-            history.view(false).status,
-            Some(Status::TooLarge { .. })
+            prepare(vec!["X".to_string()], Payload::Unsupported),
+            Prepared::Status(Status::Unsupported { .. })
+        ));
+        assert!(matches!(
+            prepare(vec![], Payload::TooLarge),
+            Prepared::Status(Status::TooLarge { .. })
+        ));
+        assert!(matches!(
+            prepare(
+                vec![],
+                Payload::Text {
+                    text: "a".to_string(),
+                    rich: vec![]
+                }
+            ),
+            Prepared::Text { .. }
+        ));
+        assert!(matches!(
+            prepare(vec![], Payload::Files(vec!["x".to_string()])),
+            Prepared::Files { .. }
         ));
     }
 
     #[test]
-    fn valid_image_is_stored_with_dimensions_and_dedups() {
-        let mut history = History::default();
-        let image = RgbaImage::from_pixel(2, 3, Rgba([10, 20, 30, 255]));
-        let dib = || Payload::Image(RawImage::Dib(imaging::to_dib(&image)));
-        ingest(&mut history, Vec::new(), dib(), 1);
-        let view = history.view(false);
-        assert_eq!(view.items[0].kind, "image");
-        assert_eq!(view.items[0].width, Some(2));
-        assert_eq!(view.items[0].height, Some(3));
-        // 同じ画像は増やさず、先頭へ移すだけ
-        ingest(&mut history, Vec::new(), dib(), 2);
-        assert_eq!(history.view(false).items.len(), 1);
-    }
-
-    #[test]
-    fn oversized_image_sets_too_large_status() {
-        let mut history = History::default();
-        // BITMAPINFOHEADER(40バイト)に巨大な寸法を宣言したDIB
+    fn prepare_decodes_image_and_maps_errors() {
+        // 正常な画像はデコードまで済ませ、ハッシュを持つ
+        assert!(matches!(
+            prepare(vec![], dib_payload()),
+            Prepared::Image { .. }
+        ));
+        // 壊れた画像はエラー状態
+        assert!(matches!(
+            prepare(vec![], Payload::Image(RawImage::Png(vec![0u8; 16]))),
+            Prepared::Status(Status::Error { .. })
+        ));
+        // 巨大な画像は「大きすぎ」状態(確保の前に弾く)
         let mut dib = vec![0u8; 40];
         dib[..4].copy_from_slice(&40u32.to_le_bytes());
         dib[4..8].copy_from_slice(&8000i32.to_le_bytes());
         dib[8..12].copy_from_slice(&8000i32.to_le_bytes());
-        ingest(
-            &mut history,
-            vec!["CF_DIB".to_string()],
-            Payload::Image(RawImage::Dib(dib)),
+        assert!(matches!(
+            prepare(vec![], Payload::Image(RawImage::Dib(dib))),
+            Prepared::Status(Status::TooLarge { .. })
+        ));
+    }
+
+    // --- encode_image: 重い符号化(ロックの外で呼ぶ純粋関数) ---
+
+    #[test]
+    fn encode_image_reuses_png_source_and_builds_thumbnail() {
+        let image = sample();
+        // PNGとして受け取ったらそのまま使う
+        let stored = encode_image(RawImage::Png(vec![1, 2, 3]), &image, 42).unwrap();
+        assert_eq!(stored.png.as_slice(), &[1, 2, 3]);
+        assert!(!stored.thumbnail.is_empty());
+        assert_eq!((stored.width, stored.height, stored.hash), (2, 3, 42));
+        // DIBならPNGへ符号化する
+        let stored = encode_image(RawImage::Dib(imaging::to_dib(&image)), &image, 7).unwrap();
+        assert!(stored.png.as_slice().starts_with(&[0x89, b'P', b'N', b'G']));
+    }
+
+    // --- apply: ロックの外で符号化しつつ、履歴/状態へ反映する ---
+
+    #[test]
+    fn apply_records_image_with_dimensions_and_dedups() {
+        let history = Mutex::new(History::default());
+        apply(&history, vec![], dib_payload(), 1);
+        {
+            let view = history.lock().unwrap().view(false);
+            assert_eq!(view.items[0].kind, "image");
+            assert_eq!(
+                (view.items[0].width, view.items[0].height),
+                (Some(2), Some(3))
+            );
+        }
+        // 同じ画像は増やさず、先頭へ移すだけ
+        apply(&history, vec![], dib_payload(), 2);
+        assert_eq!(history.lock().unwrap().view(false).items.len(), 1);
+    }
+
+    #[test]
+    fn apply_records_text_files_and_status() {
+        let history = Mutex::new(History::default());
+        apply(
+            &history,
+            vec![],
+            Payload::Text {
+                text: "a".to_string(),
+                rich: vec![],
+            },
             1,
         );
+        assert_eq!(history.lock().unwrap().view(false).items[0].kind, "text");
+
+        apply(
+            &history,
+            vec![],
+            Payload::Files(vec!["a.txt".to_string()]),
+            2,
+        );
+        assert_eq!(history.lock().unwrap().view(false).items[0].kind, "files");
+
+        apply(&history, vec![], Payload::Empty, 3);
         assert!(matches!(
-            history.view(false).status,
-            Some(Status::TooLarge { .. })
+            history.lock().unwrap().view(false).status,
+            Some(Status::Empty)
         ));
     }
 
     #[test]
-    fn corrupt_image_sets_error_status() {
-        let mut history = History::default();
-        ingest(
-            &mut history,
-            Vec::new(),
+    fn apply_sets_error_for_corrupt_image() {
+        let history = Mutex::new(History::default());
+        apply(
+            &history,
+            vec![],
             Payload::Image(RawImage::Png(vec![0u8; 16])),
             1,
         );
         assert!(matches!(
-            history.view(false).status,
+            history.lock().unwrap().view(false).status,
             Some(Status::Error { .. })
         ));
     }

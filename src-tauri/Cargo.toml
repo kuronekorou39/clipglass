@@ -1,6 +1,6 @@
 [package]
 name = "clipglass"
-version = "0.7.4"
+version = "0.7.5"
 description = "Clipglass - always-visible clipboard viewer"
 edition = "2021"
 
