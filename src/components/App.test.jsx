@@ -297,6 +297,24 @@ describe("App", () => {
     expect(invoke).toHaveBeenCalledWith("set_hotkey", { hotkey: "Alt+Shift+Q" });
   });
 
+  it("ほかで使われていそうな組み合わせには注意を出し、元に戻せる", async () => {
+    await click($('button[aria-label="設定"]'));
+    await click([...root.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "起動"));
+    // テストの設定は Ctrl+Shift+V なので、最初から注意が出る
+    expect($(".hotkey-warning").textContent).toContain("書式なしで貼り付け");
+    const box = $('[aria-label="ショートカット"]');
+    await click(box);
+    await act(async () =>
+      box.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyQ", altKey: true, shiftKey: true })),
+    );
+    await act(async () => {});
+    const undo = [...root.querySelectorAll(".hotkey button")].find((b) => b.textContent === "元に戻す");
+    expect(undo.title).toBe("Ctrl + Shift + V に戻す");
+    await click(undo);
+    expect(invoke).toHaveBeenLastCalledWith("get_config");
+    expect(invoke).toHaveBeenCalledWith("set_hotkey", { hotkey: "Ctrl+Shift+V" });
+  });
+
   it("ショートカットの記録は Esc で取りやめ、元のショートカットに戻す", async () => {
     await click($('button[aria-label="設定"]'));
     await click([...root.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "起動"));

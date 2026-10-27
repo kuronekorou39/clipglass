@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { formatHotkey, readHotkey } from "../hotkey.js";
+import { hotkeyConflicts } from "../hotkeyConflicts.js";
 
 /**
  * ショートカットを、実際にキーを押して記録する。
  * 記録のあいだは今のショートカットを止める(押すとウィンドウが隠れてしまうため)。
- * Esc かほかの場所を押すと取りやめる。
+ * Esc かほかの場所を押すと取りやめる。ほかで使われていそうな組み合わせには注意を出し、
+ * 変えた直後は「元に戻す」で前のショートカットへ戻せる。
  */
 export function HotkeyRecorder({ hotkey, onChange, onSuspend }) {
   const [recording, setRecording] = useState(false);
   const [pending, setPending] = useState([]);
   const [error, setError] = useState(null);
+  // 変える前のショートカット。この画面で変えたときだけ持つ
+  const [previous, setPrevious] = useState(null);
   const boxRef = useRef(null);
 
   useEffect(() => {
@@ -27,8 +31,21 @@ export function HotkeyRecorder({ hotkey, onChange, onSuspend }) {
     if (!recording) return;
     setRecording(false);
     setPending([]);
-    if (next === undefined) onSuspend(false);
-    else onChange(next);
+    if (next === undefined || next === hotkey) {
+      onSuspend(false);
+      return;
+    }
+    change(next);
+  };
+
+  const change = (next) => {
+    setPrevious(hotkey);
+    onChange(next);
+  };
+
+  const undo = () => {
+    onChange(previous);
+    setPrevious(null);
   };
 
   const onKeyDown = (e) => {
@@ -58,6 +75,7 @@ export function HotkeyRecorder({ hotkey, onChange, onSuspend }) {
     if (recording) setPending(readHotkey(e).pending ?? []);
   };
 
+  const conflicts = hotkeyConflicts(hotkey);
   let label = formatHotkey(hotkey) || "なし";
   if (recording) {
     label = pending.length > 0 ? `${formatHotkey(pending.join("+"))} + …` : "キーを押してください";
@@ -89,13 +107,30 @@ export function HotkeyRecorder({ hotkey, onChange, onSuspend }) {
             class="row-btn"
             title="ショートカットを使わない"
             disabled={!hotkey}
-            onClick={() => onChange("")}
+            onClick={() => change("")}
           >
             なし
           </button>
         )}
+        {previous !== null && !recording && (
+          <button
+            class="row-btn"
+            title={`${formatHotkey(previous) || "なし"} に戻す`}
+            onClick={undo}
+          >
+            元に戻す
+          </button>
+        )}
       </div>
       {error && recording && <div class="hotkey-error">{error}</div>}
+      {!recording && conflicts.length > 0 && (
+        <div class="hotkey-warning" role="note">
+          <span aria-hidden="true">⚠</span>
+          <span>
+            ほかで使われているかもしれません: {conflicts.join("、")}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

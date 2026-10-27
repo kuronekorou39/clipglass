@@ -811,6 +811,15 @@ button {
   outline: none;
 }
 
+.hotkey-warning {
+  display: flex;
+  gap: 0.4em;
+  margin-top: 0.4em;
+  color: var(--rich);
+  font-size: 0.9em;
+  animation: fade-in var(--open-duration) ease-out;
+}
+
 .hotkey-error {
   margin-top: 0.3em;
   color: var(--red);
