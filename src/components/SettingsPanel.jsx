@@ -1,10 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import {
-  FONT_SIZE_MAX,
-  FONT_SIZE_MIN,
-  TRANSPARENCY_MODES,
-  parseHistoryLimit,
-} from "../settings.js";
+import { FONT_SIZE_MAX, FONT_SIZE_MIN, parseHistoryLimit } from "../settings.js";
 
 const TABS = [
   ["view", "表示"],
@@ -30,24 +25,9 @@ function Check({ checked, onChange, title, children }) {
   );
 }
 
-function ViewTab({ settings, onTransparencyChange, onFontSizeStep, onWrapChange }) {
+function ViewTab({ settings, onFontSizeStep, onWrapChange }) {
   return (
     <>
-      <div class="field">
-        <span title="濃さはタイトルバーのつまみで変えます">透過</span>
-        <div class="segmented">
-          {TRANSPARENCY_MODES.map(([mode, label]) => (
-            <button
-              key={mode}
-              class={settings.transparency === mode ? "active" : ""}
-              aria-pressed={settings.transparency === mode}
-              onClick={() => onTransparencyChange(mode)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
       <div class="field">
         <span title="Ctrl と +/-/0、Ctrl とホイールでも変えられます">文字サイズ</span>
         <div class="stepper">
@@ -134,7 +114,7 @@ function StartupTab({ config, onApply }) {
           <input
             type="text"
             value={hotkey}
-            placeholder="例: Ctrl+Shift+V"
+            placeholder="例: Alt+Shift+V"
             spellcheck={false}
             onInput={(e) => setHotkey(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && commitHotkey()}
@@ -180,7 +160,6 @@ function WindowTab({ onSnap, onResetSize }) {
 export function SettingsPanel({
   config,
   settings,
-  onTransparencyChange,
   onFontSizeStep,
   onWrapChange,
   onClose,
@@ -217,7 +196,6 @@ export function SettingsPanel({
           {tab === "view" && (
             <ViewTab
               settings={settings}
-              onTransparencyChange={onTransparencyChange}
               onFontSizeStep={onFontSizeStep}
               onWrapChange={onWrapChange}
             />

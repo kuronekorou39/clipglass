@@ -4,7 +4,7 @@ import {
   FONT_SIZE_MAX,
   FONT_SIZE_MIN,
   loadSettings,
-  opacityTargets,
+  backgroundAlpha,
   parseHistoryLimit,
   saveSettings,
   stepFontSize,
@@ -64,18 +64,13 @@ describe("parseHistoryLimit", () => {
   });
 });
 
-describe("opacityTargets", () => {
-  it("背景だけのときはウィンドウを不透明にして背景色を薄くする", () => {
-    expect(opacityTargets({ opacity: 40, transparency: "background" })).toEqual({ window: 1, background: 0.4 });
+describe("backgroundAlpha", () => {
+  it("不透明度を背景色のアルファにする", () => {
+    expect(backgroundAlpha({ opacity: 40 })).toBe(0.4);
   });
 
-  it("ウィンドウ全体のときは背景色を不透明にしてウィンドウを薄くする", () => {
-    expect(opacityTargets({ opacity: 40, transparency: "window" })).toEqual({ window: 0.4, background: 1 });
-  });
-
-  it("以前の版で保存した設定(透過のしかたがない)は背景だけになる", () => {
-    const settings = loadSettings({ getItem: () => JSON.stringify({ opacity: 70 }) });
-    expect(settings.transparency).toBe("background");
-    expect(opacityTargets(settings)).toEqual({ window: 1, background: 0.7 });
+  it("以前の版で「ウィンドウ全体」を選んでいても、背景だけを透かす", () => {
+    const settings = loadSettings({ getItem: () => JSON.stringify({ opacity: 70, transparency: "window" }) });
+    expect(backgroundAlpha(settings)).toBe(0.7);
   });
 });

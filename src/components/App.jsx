@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   DEFAULT_SETTINGS,
   loadSettings,
-  opacityTargets,
+  backgroundAlpha,
   saveSettings,
   stepFontSize,
 } from "../settings.js";
@@ -78,7 +78,8 @@ export function App() {
   useEffect(() => {
     (async () => {
       try {
-        await invoke("set_window_opacity", { opacity: opacityTargets(settings).window });
+        // 以前の版の「ウィンドウ全体」の透過が残らないよう、ウィンドウは不透明に戻す
+        await invoke("set_window_opacity", { opacity: 1 });
         await invoke("set_pinned", { pinned: settings.pinned });
       } finally {
         await invoke("show_window");
@@ -125,9 +126,8 @@ export function App() {
   // 背景だけを透かすときは背景色のアルファを下げ、文字は不透明のまま残す
   useEffect(() => {
     const root = document.documentElement;
-    root.style.setProperty("--bg-alpha", String(opacityTargets(settings).background));
-    root.dataset.transparency = settings.transparency;
-  }, [settings.opacity, settings.transparency]);
+    document.documentElement.style.setProperty("--bg-alpha", String(backgroundAlpha(settings)));
+  }, [settings.opacity]);
 
   const handleFontSizeStep = useCallback((steps) => {
     setSettings((prev) => {
@@ -184,14 +184,6 @@ export function App() {
     await invoke("set_pinned", { pinned });
   }, [settings.pinned]);
 
-  /** 不透明度か透過のしかたを変え、ウィンドウ全体の不透明度も合わせる。 */
-  const applyOpacity = useCallback(
-    async (patch) => {
-      updateSettings(patch);
-      await invoke("set_window_opacity", { opacity: opacityTargets({ ...settings, ...patch }).window });
-    },
-    [settings],
-  );
 
   /** 絞り込みを閉じるときは条件も解く。隠れたまま一覧が絞られていると気づけないため。 */
   const closeFilter = useCallback(() => {
@@ -274,7 +266,7 @@ export function App() {
         paused={paused}
         onPauseToggle={() => invoke("set_paused", { paused: !paused })}
         onPinToggle={handlePinToggle}
-        onOpacityChange={(opacity) => applyOpacity({ opacity })}
+        onOpacityChange={(opacity) => updateSettings({ opacity })}
         onClose={() => invoke("hide_window")}
       />
       {filterOpen && (
@@ -336,6 +328,7 @@ export function App() {
           call={call}
           onReload={loadPresets}
           onOpenFile={() => runOrToast(() => invoke("open_presets_file"))}
+          onRevealFile={() => runOrToast(() => invoke("reveal_presets_file"))}
           onClose={() => setPresetsOpen(false)}
         />
       )}
@@ -353,7 +346,6 @@ export function App() {
         <SettingsPanel
           config={config}
           settings={settings}
-          onTransparencyChange={(transparency) => applyOpacity({ transparency })}
           onFontSizeStep={handleFontSizeStep}
           onWrapChange={(wrap) => updateSettings({ wrap })}
           onClose={() => setSettingsOpen(false)}

@@ -255,13 +255,24 @@ describe("App", () => {
     expect($("#search")).toBeTruthy();
   });
 
-  it("背景だけの透過では、ウィンドウは不透明のまま背景色を薄くする", async () => {
+  it("透かすのは背景だけで、ウィンドウは不透明のまま。透過のしかたの選択はない", async () => {
     expect(invoke).toHaveBeenCalledWith("set_window_opacity", { opacity: 1 });
     expect(document.documentElement.style.getPropertyValue("--bg-alpha")).toBe("0.5");
+    invoke.mockClear();
+    await act(async () => {
+      const slider = $('#titlebar input[type="range"]');
+      slider.value = "30";
+      slider.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.documentElement.style.getPropertyValue("--bg-alpha")).toBe("0.3");
+    expect(invoke).not.toHaveBeenCalledWith("set_window_opacity", expect.anything());
     await click($('button[aria-label="設定"]'));
-    const whole = [...root.querySelectorAll(".segmented button")][1];
-    await click(whole);
-    expect(invoke).toHaveBeenLastCalledWith("set_window_opacity", { opacity: 0.5 });
-    expect(document.documentElement.style.getPropertyValue("--bg-alpha")).toBe("1");
+    expect(root.textContent).not.toContain("ウィンドウ全体");
+  });
+
+  it("プリセットのファイルの場所をエクスプローラーで表示できる", async () => {
+    await click($("#footer .footer-btn"));
+    await click([...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent === "場所"));
+    expect(invoke).toHaveBeenCalledWith("reveal_presets_file");
   });
 });

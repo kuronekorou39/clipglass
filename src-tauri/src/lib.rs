@@ -575,6 +575,13 @@ fn open_presets_file(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn reveal_presets_file(state: State<AppState>) -> Result<(), String> {
+    let file = &state.paths().presets_file;
+    presets::ensure_exists(file)?;
+    tauri_plugin_opener::reveal_item_in_dir(file).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn open_data_dir(state: State<AppState>) -> Result<(), String> {
     tauri_plugin_opener::open_path(&state.paths().data_dir, None::<&str>).map_err(|e| e.to_string())
 }
@@ -816,6 +823,7 @@ pub fn run() {
             reorder_preset,
             remove_preset,
             open_presets_file,
+            reveal_presets_file,
             open_data_dir,
         ])
         // 閉じるボタンや Alt+F4 では終了せず、通知領域に残す。終了は通知領域のメニューから。

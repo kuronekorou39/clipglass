@@ -19,6 +19,7 @@ export function PresetPopover({
   call,
   onReload,
   onOpenFile,
+  onRevealFile,
   onClose,
 }) {
   const [editing, setEditing] = useState(null);
@@ -131,6 +132,13 @@ export function PresetPopover({
               </button>
               <button class="row-btn push-right" title="presets.yaml を開く" onClick={onOpenFile}>
                 ファイル
+              </button>
+              <button
+                class="row-btn"
+                title="presets.yaml の場所をエクスプローラーで表示"
+                onClick={onRevealFile}
+              >
+                場所
               </button>
             </div>
           </>

@@ -11,7 +11,8 @@ use crate::limits::{DEFAULT_HISTORY_MAX_ITEMS, HISTORY_MAX_ITEMS_LIMIT};
 pub const FILE_NAME: &str = "config.yaml";
 const BROKEN_FILE_NAME: &str = "config.broken.yaml";
 /// ウィンドウの表示/非表示を切り替えるショートカットの初期値。
-pub const DEFAULT_HOTKEY: &str = "Ctrl+Shift+V";
+/// Ctrl+Shift+V はブラウザーやチャットの「書式なしで貼り付け」と被るので避ける。
+pub const DEFAULT_HOTKEY: &str = "Alt+Shift+V";
 
 const FILE_HEADER: &str = "# Clipglass の設定。アプリが書き換えるので、コメントは残りません。\n";
 

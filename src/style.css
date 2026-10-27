@@ -37,8 +37,8 @@
   --footer-height: 34px;
 }
 
-/* 背景だけを透かすときは、明るい背景の上でも文字が読めるよう薄い影を付ける */
-:root[data-transparency="background"] body {
+/* 背景を透かしても、明るい背景の上で文字が読めるよう薄い影を付ける */
+body {
   text-shadow: 0 0 2px rgb(0 0 0 / 0.9);
 }
 
@@ -92,7 +92,8 @@ button {
   justify-content: space-between;
   height: var(--titlebar-height);
   padding: 0 4px 0 10px;
-  background: var(--bg-secondary);
+  /* 上下のバーは透かさない */
+  background: var(--bg-solid);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -664,7 +665,7 @@ button {
   height: var(--footer-height);
   /* 下辺と右下のつまみの帯にボタンが掛からないよう、内側に寄せる */
   padding: 0 calc(var(--grip-corner) + 2px) var(--grip-edge) 6px;
-  background: var(--bg-secondary);
+  background: var(--bg-solid);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   font-size: 12px;
@@ -688,6 +689,12 @@ button {
 .footer-btn.active {
   background: var(--bg-hover);
   color: var(--text-bright);
+}
+
+/* 下部の検索と設定は、記号だけなので大きめに */
+#footer .titlebar-btn {
+  font-size: 17px;
+  color: var(--text-primary);
 }
 
 .titlebar-btn.filtering {
@@ -869,8 +876,7 @@ button {
   border-bottom: 1px solid var(--border);
 }
 
-.panel-tabs button,
-.segmented button {
+.panel-tabs button {
   padding: 0.3em 0.8em;
   border: none;
   background: transparent;
@@ -894,19 +900,6 @@ button {
   flex-direction: column;
   gap: 0.9em;
   min-height: 9em;
-}
-
-.segmented {
-  display: inline-flex;
-  width: fit-content;
-  border: 1px solid var(--border-light);
-  border-radius: 4px;
-  overflow: hidden;
-}
-
-.segmented button.active {
-  background: var(--bg-solid-input);
-  color: var(--accent);
 }
 
 .stepper {
