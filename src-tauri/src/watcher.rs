@@ -22,16 +22,32 @@ use crate::clipboard::{self, Payload};
 use crate::history::{Content, History, Probe, RichFormat, Status, StoredImage};
 use crate::imaging::{self, DecodeError, RawImage};
 use crate::limits::CLIPBOARD_SETTLE_DELAY_MS;
-use crate::AppState;
+use crate::{paste, AppState};
 use image::RgbaImage;
 
 /// 履歴の項目をクリップボードへ書き戻す要求。
-/// wParamに項目ID、lParamに書式を落とすかどうか(0以外で文字だけ)を入れる。
+/// wParamに項目ID、lParamに `copy_flags` の値(書式を落とすか、貼り付けるか)を入れる。
 pub const WM_COPY_ITEM: u32 = WM_APP + 1;
 /// 現在のクリップボードを読み直す要求。読み取りの再開時に使う。
 pub const WM_REFRESH: u32 = WM_APP + 2;
-/// `AppState::pending_text` の文字をクリップボードへ置く要求。プリセットのコピーに使う。
+/// `AppState::pending_text` の文字をクリップボードへ置く要求。プリセットとお気に入りの
+/// コピーに使う。wParamが0以外なら、そのあと貼り付ける。
 pub const WM_COPY_TEXT: u32 = WM_APP + 3;
+/// `WM_COPY_ITEM` のlParamのビット。
+const COPY_FLAG_PLAIN: isize = 1;
+const COPY_FLAG_PASTE: isize = 2;
+
+/// `WM_COPY_ITEM` のlParamを作る。`plain` は書式を付けない、`paste` はコピーのあと貼り付ける。
+pub fn copy_flags(plain: bool, paste: bool) -> isize {
+    let mut flags = 0;
+    if plain {
+        flags |= COPY_FLAG_PLAIN;
+    }
+    if paste {
+        flags |= COPY_FLAG_PASTE;
+    }
+    flags
+}
 pub const STATE_EVENT: &str = "clipboard-state";
 const READ_TIMER_ID: usize = 1;
 
@@ -173,9 +189,7 @@ fn apply(history: &Mutex<History>, formats: Vec<String>, payload: Payload, now: 
 }
 
 pub fn emit_state(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let paused = state.paused.load(Ordering::Relaxed);
-    let view = state.history.lock().unwrap().view(paused);
+    let view = crate::state_view(&app.state::<AppState>());
     let _ = app.emit(STATE_EVENT, view);
 }
 
@@ -198,7 +212,8 @@ fn refresh(app: &AppHandle, hwnd: HWND) {
 
 /// 履歴の項目を書き戻す。成功すれば変更通知が届き、通常の経路で先頭へ移動する。
 /// `plain` が真なら、保存してある書式付きデータを付けずに文字だけを置く。
-fn copy_item(app: &AppHandle, hwnd: HWND, id: u64, plain: bool) {
+/// `paste_after` が真なら、書き戻したあと直前に使っていたウィンドウへ貼り付ける。
+fn copy_item(app: &AppHandle, hwnd: HWND, id: u64, plain: bool, paste_after: bool) {
     let state = app.state::<AppState>();
     let result = {
         // 画像以外は小さいので、ロックしたまま書き戻す。
@@ -220,22 +235,28 @@ fn copy_item(app: &AppHandle, hwnd: HWND, id: u64, plain: bool) {
             None => return,
         }
     };
-    if let Err(message) = result {
-        set_status(app, Status::Error { message });
-        emit_state(app);
+    finish_copy(app, result, paste_after);
+}
+
+/// 書き戻しの結果を受けて、成功なら(求められていれば)貼り付け、失敗なら状態行に出す。
+fn finish_copy(app: &AppHandle, result: Result<(), String>, paste_after: bool) {
+    match result {
+        Ok(()) if paste_after => paste::paste_into_last_window(),
+        Ok(()) => {}
+        Err(message) => {
+            set_status(app, Status::Error { message });
+            emit_state(app);
+        }
     }
 }
 
 /// プリセットの文字を書き戻す。成功すれば変更通知が届き、通常の経路で履歴に入る。
-fn copy_pending_text(app: &AppHandle, hwnd: HWND) {
+fn copy_pending_text(app: &AppHandle, hwnd: HWND, paste_after: bool) {
     let text = app.state::<AppState>().pending_text.lock().unwrap().take();
     let Some(text) = text else {
         return;
     };
-    if let Err(message) = clipboard::write_text(hwnd, &text, &[]) {
-        set_status(app, Status::Error { message });
-        emit_state(app);
-    }
+    finish_copy(app, clipboard::write_text(hwnd, &text, &[]), paste_after);
 }
 
 unsafe extern "system" fn window_proc(
@@ -267,11 +288,17 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_COPY_ITEM => {
-            copy_item(app, hwnd, wparam.0 as u64, lparam.0 != 0);
+            copy_item(
+                app,
+                hwnd,
+                wparam.0 as u64,
+                lparam.0 & COPY_FLAG_PLAIN != 0,
+                lparam.0 & COPY_FLAG_PASTE != 0,
+            );
             LRESULT(0)
         }
         WM_COPY_TEXT => {
-            copy_pending_text(app, hwnd);
+            copy_pending_text(app, hwnd, wparam.0 != 0);
             LRESULT(0)
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
@@ -302,6 +329,8 @@ unsafe fn run(app: AppHandle) -> windows::core::Result<()> {
         None,
     )?;
     AddClipboardFormatListener(hwnd)?;
+    // 貼り付け先を覚えるために、前面のウィンドウの切り替わりも同じスレッドで受ける
+    paste::watch_foreground();
     app.state::<AppState>()
         .watcher_hwnd
         .store(hwnd.0 as isize, Ordering::Relaxed);
@@ -342,6 +371,16 @@ mod tests {
 
     fn dib_payload() -> Payload {
         Payload::Image(RawImage::Dib(imaging::to_dib(&sample())))
+    }
+
+    #[test]
+    fn copy_flags_pack_plain_and_paste_independently() {
+        assert_eq!(copy_flags(false, false), 0);
+        let both = copy_flags(true, true);
+        assert_ne!(both & COPY_FLAG_PLAIN, 0);
+        assert_ne!(both & COPY_FLAG_PASTE, 0);
+        assert_eq!(copy_flags(true, false) & COPY_FLAG_PASTE, 0);
+        assert_eq!(copy_flags(false, true) & COPY_FLAG_PLAIN, 0);
     }
 
     // --- prepare: OSにもロックにも触れない判定(デコードを含む) ---

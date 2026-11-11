@@ -138,7 +138,7 @@ export function PresetPopover({
             onEdit={(node) => setEditing({ node })}
           />
           {!error && presets.length === 0 && (
-            <div class="empty-hint">履歴の「登録」か「＋ プリセット」で追加できます</div>
+            <div class="empty-hint">履歴の行の右クリックか「＋ プリセット」で追加できます</div>
           )}
           {presets.length > 0 && visiblePresets.length === 0 && (
             <div class="empty-hint">一致するプリセットがありません</div>

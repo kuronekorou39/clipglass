@@ -44,8 +44,6 @@ pub struct Item {
     /// 最後に取得した時点でクリップボードにあった形式名。
     pub formats: Vec<String>,
     pub updated_at: u64,
-    /// 固定した項目は件数の上限に数えず、捨てられない。
-    pub pinned: bool,
 }
 
 impl Item {
@@ -83,7 +81,8 @@ pub struct ItemView {
     pub formats: Vec<String>,
     /// 保存してある書式付きデータの形式名。再コピーで復元できるもの。
     pub stored_rich: Vec<String>,
-    pub pinned: bool,
+    /// お気に入りに入っている文字かどうか。行に星を出す。
+    pub favorite: bool,
     pub updated_at: u64,
 }
 
@@ -101,8 +100,10 @@ pub struct History {
     next_id: u64,
     current_id: Option<u64>,
     status: Option<Status>,
-    /// 固定していない項目の上限。
+    /// 一覧に残す項目の上限。
     max_items: usize,
+    /// 上限を超えて一覧から外れた項目。呼び出し側が取り出して保管へ回す。
+    evicted: Vec<Item>,
 }
 
 impl Default for History {
@@ -113,6 +114,7 @@ impl Default for History {
             current_id: None,
             status: None,
             max_items: DEFAULT_HISTORY_MAX_ITEMS,
+            evicted: Vec::new(),
         }
     }
 }
@@ -122,22 +124,21 @@ impl History {
         &self.items
     }
 
-    /// 固定していない項目の上限を変え、超えた分の古い項目を捨てる。
+    /// 項目の上限を変え、超えた分の古い項目を一覧から外す。
     pub fn set_max_items(&mut self, max_items: usize) {
         self.max_items = max_items.clamp(1, HISTORY_MAX_ITEMS_LIMIT);
         self.enforce_limit();
     }
 
     fn enforce_limit(&mut self) {
-        let max_items = self.max_items;
-        let mut unpinned = 0;
-        self.items.retain(|item| {
-            if item.pinned {
-                return true;
-            }
-            unpinned += 1;
-            unpinned <= max_items
-        });
+        if self.items.len() > self.max_items {
+            self.evicted.extend(self.items.drain(self.max_items..));
+        }
+    }
+
+    /// 上限を超えて一覧から外れた項目を取り出す。呼び出し側が保管へ回す。
+    pub fn take_evicted(&mut self) -> Vec<Item> {
+        std::mem::take(&mut self.evicted)
     }
 
     /// 同じ内容の項目があれば先頭へ移動して `true` を返す。
@@ -160,7 +161,6 @@ impl History {
             content,
             formats,
             updated_at,
-            pinned: false,
         }
     }
 
@@ -175,16 +175,27 @@ impl History {
     }
 
     /// ディスクから読み込んだ項目を末尾に足す。現在の項目にはしない。
-    pub fn append_loaded(
-        &mut self,
-        content: Content,
-        formats: Vec<String>,
-        pinned: bool,
-        updated_at: u64,
-    ) {
-        let mut item = self.new_item(content, formats, updated_at);
-        item.pinned = pinned;
+    pub fn append_loaded(&mut self, content: Content, formats: Vec<String>, updated_at: u64) {
+        let item = self.new_item(content, formats, updated_at);
         self.items.push(item);
+    }
+
+    /// 保管から戻した項目を先頭に入れる。同じ内容がすでにあれば、その項目のIDを返す。
+    /// 現在の項目にはしない(クリップボードへ書き戻したあと、通常の経路でそうなる)。
+    pub fn restore(&mut self, content: Content, formats: Vec<String>, updated_at: u64) -> u64 {
+        let probe = match &content {
+            Content::Text { text, .. } => Probe::Text(text),
+            Content::Image(image) => Probe::Image(image.hash),
+            Content::Files(paths) => Probe::Files(paths),
+        };
+        if let Some(item) = self.items.iter().find(|item| item.matches(&probe)) {
+            return item.id;
+        }
+        let item = self.new_item(content, formats, updated_at);
+        let id = item.id;
+        self.items.insert(0, item);
+        self.enforce_limit();
+        id
     }
 
     /// テキストを記録する。同じ文字列がすでにあれば先頭へ移動する。
@@ -222,15 +233,6 @@ impl History {
         true
     }
 
-    /// 固定を切り替える。固定を外しても、次に項目が増えるまでは捨てない。
-    pub fn set_pinned(&mut self, id: u64, pinned: bool) -> bool {
-        let Some(item) = self.items.iter_mut().find(|item| item.id == id) else {
-            return false;
-        };
-        item.pinned = pinned;
-        true
-    }
-
     /// クリップボードが履歴の項目と一致しなくなったことを記録する。
     pub fn set_status(&mut self, status: Status) {
         self.status = Some(status);
@@ -243,13 +245,24 @@ impl History {
 
     /// 読み取り停止中は、表示がクリップボードと一致している保証がないので
     /// 「現在の項目」も状態も示さない。
-    pub fn view(&self, paused: bool) -> StateView {
+    ///
+    /// `is_favorite` は、文字がお気に入りに入っているかを答える。
+    pub fn view_with(&self, paused: bool, is_favorite: &dyn Fn(&str) -> bool) -> StateView {
         StateView {
             paused,
             status: self.status.clone().filter(|_| !paused),
             current_id: self.current_id.filter(|_| !paused),
-            items: self.items.iter().map(item_view).collect(),
+            items: self
+                .items
+                .iter()
+                .map(|item| item_view(item, is_favorite))
+                .collect(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn view(&self, paused: bool) -> StateView {
+        self.view_with(paused, &|_| false)
     }
 
     fn mark_current(&mut self, id: u64) {
@@ -258,7 +271,7 @@ impl History {
     }
 }
 
-fn item_view(item: &Item) -> ItemView {
+fn item_view(item: &Item, is_favorite: &dyn Fn(&str) -> bool) -> ItemView {
     let mut view = ItemView {
         id: item.id,
         kind: "text",
@@ -270,7 +283,7 @@ fn item_view(item: &Item) -> ItemView {
         paths: None,
         formats: item.formats.clone(),
         stored_rich: Vec::new(),
-        pinned: item.pinned,
+        favorite: false,
         updated_at: item.updated_at,
     };
     match &item.content {
@@ -280,6 +293,7 @@ fn item_view(item: &Item) -> ItemView {
             view.char_count = Some(char_count);
             view.truncated = char_count > TEXT_PREVIEW_CHARS;
             view.stored_rich = rich.iter().map(|format| format.name.clone()).collect();
+            view.favorite = is_favorite(text);
         }
         Content::Image(image) => {
             view.kind = "image";
@@ -401,39 +415,80 @@ mod tests {
         assert!(!summary(&history).contains(&"0".to_string()));
     }
 
-    #[test]
-    fn pinned_items_survive_the_limit_and_are_not_counted() {
-        let mut history = History::default();
-        history.set_max_items(2);
-        add_text(&mut history, "keep", 1);
-        let keep_id = history.items[0].id;
-        assert!(history.set_pinned(keep_id, true));
-        add_text(&mut history, "a", 2);
-        add_text(&mut history, "b", 3);
-        add_text(&mut history, "c", 4);
-        assert_eq!(summary(&history), ["c", "b", "keep"]);
-        assert!(history.view(false).items[2].pinned);
-
-        // 固定を外しても、その場では捨てない
-        assert!(history.set_pinned(keep_id, false));
-        assert_eq!(history.items.len(), 3);
-        add_text(&mut history, "d", 5);
-        assert_eq!(summary(&history), ["d", "c"]);
-        assert!(!history.set_pinned(999, true));
+    fn text_content(text: &str) -> Content {
+        Content::Text {
+            text: text.into(),
+            rich: Vec::new(),
+        }
     }
 
     #[test]
-    fn lowering_the_limit_drops_old_unpinned_items() {
+    fn items_over_the_limit_are_handed_out_for_archiving() {
+        let mut history = History::default();
+        history.set_max_items(2);
+        add_text(&mut history, "a", 1);
+        add_text(&mut history, "b", 2);
+        assert!(history.take_evicted().is_empty());
+        add_text(&mut history, "c", 3);
+        add_text(&mut history, "d", 4);
+        assert_eq!(summary(&history), ["d", "c"]);
+        let evicted = history.take_evicted();
+        let texts: Vec<_> = evicted
+            .iter()
+            .map(|item| match &item.content {
+                Content::Text { text, .. } => text.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(texts, ["a", "b"]);
+        // 取り出したら空になる
+        assert!(history.take_evicted().is_empty());
+    }
+
+    #[test]
+    fn lowering_the_limit_evicts_old_items() {
         let mut history = History::default();
         for i in 0..5 {
             add_text(&mut history, &i.to_string(), i as u64);
         }
-        let oldest = history.items[4].id;
-        history.set_pinned(oldest, true);
         history.set_max_items(2);
-        assert_eq!(summary(&history), ["4", "3", "0"]);
+        assert_eq!(summary(&history), ["4", "3"]);
+        assert_eq!(history.take_evicted().len(), 3);
         history.set_max_items(0);
-        assert_eq!(summary(&history), ["4", "0"]);
+        assert_eq!(summary(&history), ["4"]);
+    }
+
+    #[test]
+    fn explicitly_removed_items_are_not_evicted() {
+        let mut history = History::default();
+        add_text(&mut history, "a", 1);
+        let id = history.items[0].id;
+        assert!(history.remove(id));
+        assert!(history.take_evicted().is_empty());
+    }
+
+    #[test]
+    fn restored_item_goes_to_front_without_becoming_current() {
+        let mut history = History::default();
+        add_text(&mut history, "a", 1);
+        let current = history.current_id;
+        let id = history.restore(text_content("old"), Vec::new(), 0);
+        assert_eq!(summary(&history), ["old", "a"]);
+        assert_eq!(history.current_id, current);
+        // 同じ内容が一覧にあれば増やさず、その項目を指す
+        assert_eq!(history.restore(text_content("old"), Vec::new(), 0), id);
+        assert_eq!(history.items.len(), 2);
+    }
+
+    #[test]
+    fn favorite_texts_are_marked_in_view() {
+        let mut history = History::default();
+        add_text(&mut history, "test", 1);
+        add_text(&mut history, "other", 2);
+        history.insert(image_content(1), Vec::new(), 3);
+        let view = history.view_with(false, &|text| text == "test");
+        let marks: Vec<_> = view.items.iter().map(|item| item.favorite).collect();
+        assert_eq!(marks, [false, false, true]);
     }
 
     #[test]
@@ -454,54 +509,24 @@ mod tests {
     #[test]
     fn loaded_items_go_to_the_end_without_becoming_current() {
         let mut history = History::default();
-        history.append_loaded(Content::Files(vec!["x".into()]), Vec::new(), true, 7);
+        history.append_loaded(Content::Files(vec!["x".into()]), Vec::new(), 7);
         history.append_loaded(
             Content::Text {
                 text: "t".into(),
-                rich: Vec::new(),
+                rich: html("<b>t</b>"),
             },
             Vec::new(),
-            false,
             8,
         );
         assert_eq!(summary(&history), ["x", "t"]);
         assert_eq!(history.current_id, None);
-        assert!(history.items[0].pinned);
         assert_ne!(history.items[0].id, history.items[1].id);
 
-        // 読み込んだテキストと同じものをコピーすると、新しい行は増えない
+        // 読み込んだテキストと同じものをコピーすると、新しい行は増えず、書式も残る
         add_text(&mut history, "t", 9);
         assert_eq!(summary(&history), ["t", "x"]);
         assert_eq!(history.current_id, Some(history.items[0].id));
-    }
-
-    #[test]
-    fn promote_and_recopy_keep_the_pinned_flag_and_rich_data() {
-        let mut history = History::default();
-        history.append_loaded(
-            Content::Text {
-                text: "a".into(),
-                rich: html("<b>a</b>"),
-            },
-            Vec::new(),
-            true,
-            1,
-        );
-        add_text(&mut history, "b", 2);
-        add_text(&mut history, "a", 3);
-        assert_eq!(summary(&history), ["a", "b"]);
-        assert!(history.items[0].pinned);
-        assert_eq!(stored_html(&history), Some("<b>a</b>".as_bytes()));
-    }
-
-    #[test]
-    fn pinned_items_can_be_removed() {
-        let mut history = History::default();
-        add_text(&mut history, "a", 1);
-        let id = history.items[0].id;
-        history.set_pinned(id, true);
-        assert!(history.remove(id));
-        assert!(history.items.is_empty());
+        assert_eq!(stored_html(&history), Some("<b>t</b>".as_bytes()));
     }
 
     #[test]
@@ -510,18 +535,10 @@ mod tests {
         history.set_max_items(HISTORY_MAX_ITEMS_LIMIT + 1);
         assert_eq!(history.max_items, HISTORY_MAX_ITEMS_LIMIT);
         for i in 0..4 {
-            history.append_loaded(
-                Content::Text {
-                    text: i.to_string(),
-                    rich: Vec::new(),
-                },
-                Vec::new(),
-                i == 3,
-                i,
-            );
+            history.append_loaded(text_content(&i.to_string()), Vec::new(), i);
         }
         history.set_max_items(2);
-        assert_eq!(summary(&history), ["0", "1", "3"]);
+        assert_eq!(summary(&history), ["0", "1"]);
     }
 
     #[test]

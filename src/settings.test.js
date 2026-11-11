@@ -5,6 +5,7 @@ import {
   FONT_SIZE_MIN,
   loadSettings,
   backgroundAlpha,
+  parseArchiveDays,
   parseHistoryLimit,
   saveSettings,
   stepFontSize,
@@ -34,6 +35,30 @@ describe("settings", () => {
   it("壊れた保存内容は初期値に戻す", () => {
     const storage = memoryStorage({ "clipglass-settings": "{broken" });
     expect(loadSettings(storage)).toEqual(DEFAULT_SETTINGS);
+  });
+});
+
+describe("色合いと貼り付け", () => {
+  it("初期値はダークで、選ぶと貼り付ける", () => {
+    expect(DEFAULT_SETTINGS.theme).toBe("dark");
+    expect(DEFAULT_SETTINGS.pasteOnSelect).toBe(true);
+  });
+
+  it("今の一覧にない色合いは初期値に戻す", () => {
+    const stored = (theme) => loadSettings({ getItem: () => JSON.stringify({ theme }) }).theme;
+    expect(stored("xp")).toBe("xp");
+    expect(stored("no-such-theme")).toBe("dark");
+    expect(stored(null)).toBe("dark");
+  });
+});
+
+describe("parseArchiveDays", () => {
+  it("0(保管しない)から上限までに収める", () => {
+    expect(parseArchiveDays("0", 365)).toBe(0);
+    expect(parseArchiveDays("-1", 365)).toBe(0);
+    expect(parseArchiveDays("30", 365)).toBe(30);
+    expect(parseArchiveDays("9999", 365)).toBe(365);
+    expect(parseArchiveDays("x", 365)).toBe(null);
   });
 });
 

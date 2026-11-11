@@ -1,3 +1,5 @@
+import { DEFAULT_THEME, normalizeTheme } from "./themes.js";
+
 const STORAGE_KEY = "clipglass-settings";
 
 export const OPACITY_MIN = 20;
@@ -14,12 +16,18 @@ export const DEFAULT_SETTINGS = {
   fontSize: 14,
   wrap: true,
   saveDir: null,
+  theme: DEFAULT_THEME,
+  // 一覧・プリセット・お気に入りから選んだ内容を、直前に使っていたアプリへ貼り付ける
+  pasteOnSelect: true,
 };
 
 export function loadSettings(storage) {
   try {
     const raw = storage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const settings = { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      return { ...settings, theme: normalizeTheme(settings.theme) };
+    }
   } catch {
     // 壊れた設定は初期値に戻す
   }
@@ -49,4 +57,11 @@ export function parseHistoryLimit(value, limit) {
 /** 不透明度(%)を背景色のアルファ(0〜1)にする。透かすのは背景だけで、文字は不透明のまま残す。 */
 export function backgroundAlpha({ opacity }) {
   return opacity / 100;
+}
+
+/** 保管する日数の入力を整数にして 0〜`limit` に収める。0 は「保管しない」。読めなければ null。 */
+export function parseArchiveDays(value, limit) {
+  const number = parseInt(value, 10);
+  if (Number.isNaN(number)) return null;
+  return Math.min(limit, Math.max(0, number));
 }

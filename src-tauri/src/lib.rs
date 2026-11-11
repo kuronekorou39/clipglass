@@ -1,15 +1,19 @@
+mod archive;
 mod clipboard;
 mod config;
 mod drag;
+mod favorites;
 mod history;
 mod imaging;
 mod limits;
+mod paste;
 mod placement;
 mod presets;
 mod save;
 mod store;
 mod watcher;
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
@@ -29,6 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LWA_ALPHA, WS_EX_LAYERED,
 };
 
+use archive::Archive;
 use config::Config;
 use history::{Content, History, StateView};
 use placement::{Corner, DragKind, Rect};
@@ -41,6 +46,17 @@ const IMAGE_SCHEME: &str = "clipimg";
 /// 履歴の保存やショートカットの登録など、状態行に出さない通知をUIへ送るイベント。
 const NOTICE_EVENT: &str = "notice";
 const HISTORY_DIR: &str = "history";
+/// 画像のURLのうち、保管した項目のサムネイルを指す先頭の区切り(`/archive/<日>/<ハッシュ>`)。
+const ARCHIVE_IMAGE_VARIANT: &str = "archive";
+/// 設定の「情報」から開けるページ。UIからは名前で指定し、任意のURLは開かせない。
+const LINKS: [(&str, &str); 3] = [
+    ("repo", "https://github.com/kuronekorou39/clipglass"),
+    (
+        "releases",
+        "https://github.com/kuronekorou39/clipglass/releases",
+    ),
+    ("site", "https://rou39.com"),
+];
 const TRAY_SHOW: &str = "show";
 const TRAY_QUIT: &str = "quit";
 /// 画面の隅に置くときの、隅からの余白(論理ピクセル)。
@@ -51,7 +67,9 @@ struct Paths {
     data_dir: PathBuf,
     config_file: PathBuf,
     presets_file: PathBuf,
+    favorites_file: PathBuf,
     store: Store,
+    archive: Archive,
 }
 
 pub struct AppState {
@@ -65,6 +83,8 @@ pub struct AppState {
     window_alpha: AtomicU8,
     /// プリセットの文字をクリップボードへ置く要求。監視スレッドが取り出す。
     pub pending_text: Mutex<Option<String>>,
+    /// お気に入りの文字。新しいものが先頭。
+    favorites: Mutex<Vec<String>>,
     config: Mutex<Config>,
     paths: OnceLock<Paths>,
     /// UIが起動する前に起きた問題。最初の設定の取得で渡す。
@@ -77,13 +97,25 @@ impl AppState {
     }
 }
 
-#[tauri::command]
-fn get_state(state: State<AppState>) -> StateView {
+/// UIへ渡す履歴の状態。お気に入りに入っている文字の行には印を付ける。
+/// お気に入りのロックは履歴のロックより先に取り、すぐに離す。
+pub fn state_view(state: &AppState) -> StateView {
+    let favorites: HashSet<String> = state.favorites.lock().unwrap().iter().cloned().collect();
+    let paused = state.paused.load(Ordering::Relaxed);
     state
         .history
         .lock()
         .unwrap()
-        .view(state.paused.load(Ordering::Relaxed))
+        .view_with(paused, &|text| favorites.contains(text))
+}
+
+#[tauri::command]
+fn get_state(state: State<AppState>) -> StateView {
+    state_view(&state)
+}
+
+fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
 }
 
 fn post_to_watcher(
@@ -98,13 +130,14 @@ fn post_to_watcher(
 }
 
 /// `plain` が真なら、書式付きデータを付けずに文字だけをコピーする。
+/// `paste` が真なら、コピーしたあと直前に使っていたウィンドウへ貼り付ける。
 #[tauri::command]
-fn copy_item(state: State<AppState>, id: u64, plain: bool) -> Result<(), String> {
+fn copy_item(state: State<AppState>, id: u64, plain: bool, paste: bool) -> Result<(), String> {
     post_to_watcher(
         &state,
         watcher::WM_COPY_ITEM,
         id as usize,
-        isize::from(plain),
+        watcher::copy_flags(plain, paste),
     )
 }
 
@@ -126,29 +159,56 @@ fn remove_item(app: AppHandle, state: State<AppState>, id: u64) {
     history_changed(&app);
 }
 
-#[tauri::command]
-fn set_item_pinned(app: AppHandle, state: State<AppState>, id: u64, pinned: bool) {
-    state.history.lock().unwrap().set_pinned(id, pinned);
-    history_changed(&app);
-}
-
 /// 履歴をディスクへ書く。失敗は状態行ではなく通知として知らせる。
 fn persist_history(app: &AppHandle) {
     let state = app.state::<AppState>();
     let Some(paths) = state.paths.get() else {
         return;
     };
-    let persist_all = state.config.lock().unwrap().history.persist;
-    let result = paths
-        .store
-        .save(&state.history.lock().unwrap(), persist_all);
+    let persist = state.config.lock().unwrap().history.persist;
+    let result = paths.store.save(&state.history.lock().unwrap(), persist);
     if let Err(message) = result {
         notify(app, format!("履歴を保存できませんでした: {message}"));
     }
 }
 
+/// 上限を超えて一覧から外れた項目を保管へ回す。保管しない設定なら、そのまま捨てる。
+fn archive_evicted(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let evicted = state.history.lock().unwrap().take_evicted();
+    let Some(paths) = state.paths.get() else {
+        return;
+    };
+    let config = state.config.lock().unwrap().history.clone();
+    if evicted.is_empty() || !config.archives() {
+        return;
+    }
+    if let Err(message) = paths.archive.append(&evicted, now_ms()) {
+        notify(app, format!("古い履歴を保管できませんでした: {message}"));
+    }
+    paths.archive.prune(
+        config.archive_days,
+        config.archive_max_bytes(),
+        chrono::Local::now().date_naive(),
+    );
+}
+
+/// 保管を今の設定に合わせる。保管しない設定なら消し、するなら期間と大きさで整理する。
+fn tidy_archive(archive: &Archive, config: &config::HistoryConfig) -> Result<(), String> {
+    if !config.archives() {
+        return archive.clear();
+    }
+    archive.prune(
+        config.archive_days,
+        config.archive_max_bytes(),
+        chrono::Local::now().date_naive(),
+    );
+    Ok(())
+}
+
 /// 履歴の変更をディスクへ反映し、UIへ通知する。
 pub fn history_changed(app: &AppHandle) {
+    archive_evicted(app);
     persist_history(app);
     watcher::emit_state(app);
 }
@@ -384,6 +444,13 @@ struct ConfigView {
     history_max_items: usize,
     history_max_items_limit: usize,
     history_persist: bool,
+    /// 一覧から外れた項目を保管する日数(0 なら保管しない)と、大きさの上限(MB)。
+    archive_days: u64,
+    archive_days_limit: u64,
+    archive_max_mb: u64,
+    /// 今、保管に使っている大きさ(バイト)。
+    archive_bytes: u64,
+    version: &'static str,
     hotkey: String,
     autostart: bool,
     data_dir: String,
@@ -398,6 +465,11 @@ fn get_config(app: AppHandle, state: State<AppState>) -> ConfigView {
         history_max_items: config.history.max_items,
         history_max_items_limit: limits::HISTORY_MAX_ITEMS_LIMIT,
         history_persist: config.history.persist,
+        archive_days: config.history.archive_days,
+        archive_days_limit: limits::ARCHIVE_DAYS_LIMIT,
+        archive_max_mb: config.history.archive_max_mb,
+        archive_bytes: state.paths().archive.size(),
+        version: env!("CARGO_PKG_VERSION"),
         hotkey: config.hotkey,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         data_dir: state.paths().data_dir.to_string_lossy().into_owned(),
@@ -432,10 +504,56 @@ fn set_history_persist(
     state: State<AppState>,
     persist: bool,
 ) -> Result<(), String> {
-    update_config(&state, |config| config.history.persist = persist)?;
-    // 無効にしたときは、固定していない項目をディスクから消す。
+    let config = update_config(&state, |config| config.history.persist = persist)?;
+    // 無効にしたときは、保存してある履歴と保管をディスクから消す。
     persist_history(&app);
-    Ok(())
+    tidy_archive(&state.paths().archive, &config.history)
+}
+
+/// 保管する日数(0 で保管しない)と大きさの上限を変え、今ある保管をそれに合わせて整理する。
+#[tauri::command]
+fn set_archive(state: State<AppState>, days: u64, max_mb: u64) -> Result<(), String> {
+    let config = update_config(&state, |config| {
+        config.history.archive_days = config::clamp_archive_days(days);
+        config.history.archive_max_mb = config::clamp_archive_max_mb(max_mb);
+    })?;
+    tidy_archive(&state.paths().archive, &config.history)
+}
+
+/// 保管してある項目を新しい順に返す。ファイルを読むので、UIを止めないスレッドで行う。
+#[tauri::command(async)]
+fn get_archive(
+    state: State<AppState>,
+    query: String,
+    kinds: Vec<String>,
+    offset: usize,
+    limit: usize,
+) -> archive::Page {
+    let limit = limit.clamp(1, limits::ARCHIVE_PAGE_LIMIT);
+    state.paths().archive.list(&query, &kinds, offset, limit)
+}
+
+/// 保管してある項目を一覧へ戻し、クリップボードへ書き戻す。
+#[tauri::command]
+fn restore_archived(
+    app: AppHandle,
+    state: State<AppState>,
+    key: String,
+    paste: bool,
+) -> Result<(), String> {
+    let (content, formats, updated_at) = state.paths().archive.take(&key)?;
+    let id = state
+        .history
+        .lock()
+        .unwrap()
+        .restore(content, formats, updated_at);
+    history_changed(&app);
+    post_to_watcher(
+        &state,
+        watcher::WM_COPY_ITEM,
+        id as usize,
+        watcher::copy_flags(false, paste),
+    )
 }
 
 #[tauri::command]
@@ -482,12 +600,88 @@ fn get_presets(state: State<AppState>) -> Result<Vec<NodeView>, String> {
     Ok(presets::view(&root))
 }
 
+/// 文字をプレーンテキストとしてクリップボードへ置く。`paste` が真なら、そのあと貼り付ける。
+fn copy_text(state: &AppState, text: String, paste: bool) -> Result<(), String> {
+    *state.pending_text.lock().unwrap() = Some(text);
+    post_to_watcher(state, watcher::WM_COPY_TEXT, usize::from(paste), 0)
+}
+
 #[tauri::command]
-fn copy_preset(state: State<AppState>, path: Vec<String>) -> Result<(), String> {
+fn copy_preset(state: State<AppState>, path: Vec<String>, paste: bool) -> Result<(), String> {
     let root = presets::load(&state.paths().presets_file)?;
     let text = presets::find_text(&root, &path).ok_or("プリセットが見つかりません")?;
-    *state.pending_text.lock().unwrap() = Some(text.to_string());
-    post_to_watcher(&state, watcher::WM_COPY_TEXT, 0, 0)
+    copy_text(&state, text.to_string(), paste)
+}
+
+/// 履歴の項目の全文。UIには省略したテキストしか渡していないので、登録のときは履歴から取る。
+fn item_text(state: &AppState, id: u64) -> Result<String, String> {
+    match state
+        .history
+        .lock()
+        .unwrap()
+        .get(id)
+        .map(|item| &item.content)
+    {
+        Some(Content::Text { text, .. }) => Ok(text.clone()),
+        _ => Err("文字の項目だけを登録できます".into()),
+    }
+}
+
+#[tauri::command]
+fn get_favorites(state: State<AppState>) -> Vec<String> {
+    state.favorites.lock().unwrap().clone()
+}
+
+/// お気に入りを書き換えて保存し、一覧の星を付け直す。保存できなければ元のままにする。
+fn edit_favorites<T>(
+    app: &AppHandle,
+    change: impl FnOnce(&mut Vec<String>) -> Result<T, String>,
+) -> Result<T, String> {
+    let state = app.state::<AppState>();
+    let result = {
+        let mut favorites = state.favorites.lock().unwrap();
+        let mut next = favorites.clone();
+        let result = change(&mut next)?;
+        favorites::save(&state.paths().favorites_file, &next)?;
+        *favorites = next;
+        result
+    };
+    watcher::emit_state(app);
+    Ok(result)
+}
+
+/// お気に入りに加える。すでに入っていれば `false` を返す。
+#[tauri::command]
+fn add_favorite(app: AppHandle, text: String) -> Result<bool, String> {
+    edit_favorites(&app, |list| favorites::add(list, text))
+}
+
+/// 履歴のテキストの項目を、全文でお気に入りに加える。
+#[tauri::command]
+fn add_favorite_from_item(app: AppHandle, state: State<AppState>, id: u64) -> Result<bool, String> {
+    let text = item_text(&state, id)?;
+    edit_favorites(&app, |list| favorites::add(list, text))
+}
+
+/// 履歴のテキストの項目と同じ文字を、お気に入りから外す。
+#[tauri::command]
+fn remove_favorite_of_item(
+    app: AppHandle,
+    state: State<AppState>,
+    id: u64,
+) -> Result<bool, String> {
+    let text = item_text(&state, id)?;
+    edit_favorites(&app, |list| Ok(favorites::remove(list, &text)))
+}
+
+#[tauri::command]
+fn remove_favorite(app: AppHandle, text: String) -> Result<bool, String> {
+    edit_favorites(&app, |list| Ok(favorites::remove(list, &text)))
+}
+
+#[tauri::command]
+fn copy_favorite(state: State<AppState>, text: String, paste: bool) -> Result<(), String> {
+    copy_text(&state, text, paste)
 }
 
 /// プリセットのファイルを読み、書き換えて保存する。読めないファイルは書き直さない。
@@ -502,25 +696,30 @@ fn edit_presets<T>(
     Ok(result)
 }
 
-/// 履歴のテキストの項目を、先頭にそのまま登録する。名前は1行目から作り、重なれば番号を付ける。
-/// UIには省略したテキストしか渡していないので、全文は履歴から取る。登録した名前を返す。
+/// 履歴のテキストの項目を、選んだフォルダーの末尾に登録する。`new_folder` があれば、
+/// 先にその名前のフォルダーを `folder` の中に作り、そこへ入れる。名前は1行目から作り、
+/// 重なれば番号を付ける。登録した項目の `path` を返す。
 #[tauri::command]
-fn add_preset_from_item(state: State<AppState>, id: u64) -> Result<String, String> {
-    let text = match state
-        .history
-        .lock()
-        .unwrap()
-        .get(id)
-        .map(|item| &item.content)
-    {
-        Some(Content::Text { text, .. }) => text.clone(),
-        _ => return Err("文字の項目だけを登録できます".into()),
-    };
+fn add_preset_from_item(
+    state: State<AppState>,
+    id: u64,
+    folder: Vec<String>,
+    new_folder: Option<String>,
+) -> Result<Vec<String>, String> {
+    let text = item_text(&state, id)?;
     let name = presets::default_name(&text);
-    let path = edit_presets(&state, |root| {
-        presets::add_unique(root, &[], &name, presets::Node::Text(text))
-    })?;
-    Ok(path.last().cloned().unwrap_or_default())
+    edit_presets(&state, |root| {
+        let folder = match description(new_folder) {
+            Some(new_folder) => presets::add_unique(
+                root,
+                &folder,
+                new_folder.trim(),
+                presets::Node::Folder(Vec::new()),
+            )?,
+            None => folder,
+        };
+        presets::add_unique(root, &folder, &name, presets::Node::Text(text))
+    })
 }
 
 /// `folder` の中にプリセットを作る。作った項目の `path` を返す。
@@ -608,6 +807,16 @@ fn open_data_dir(state: State<AppState>) -> Result<(), String> {
     tauri_plugin_opener::open_path(&state.paths().data_dir, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// 設定の「情報」にあるページを、既定のブラウザーで開く。
+#[tauri::command]
+fn open_link(target: String) -> Result<(), String> {
+    let (_, url) = LINKS
+        .iter()
+        .find(|(name, _)| *name == target)
+        .ok_or("開く先が不正です")?;
+    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SaveOutcome {
@@ -687,8 +896,12 @@ async fn save_image(
 fn image_response(app: &AppHandle, path: &str) -> Option<Vec<u8>> {
     let mut segments = path.trim_start_matches('/').split('/');
     let variant = segments.next()?;
-    let id: u64 = segments.next()?.parse().ok()?;
     let state = app.state::<AppState>();
+    if variant == ARCHIVE_IMAGE_VARIANT {
+        let (day, hash) = (segments.next()?, segments.next()?);
+        return state.paths.get()?.archive.thumbnail(day, hash);
+    }
+    let id: u64 = segments.next()?.parse().ok()?;
     let history = state.history.lock().unwrap();
     let Content::Image(image) = &history.get(id)?.content else {
         return None;
@@ -734,10 +947,13 @@ fn build_tray(app: &App) -> tauri::Result<()> {
 fn setup(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     fs::create_dir_all(&data_dir)?;
+    let history_dir = data_dir.join(HISTORY_DIR);
     let paths = Paths {
         config_file: data_dir.join(config::FILE_NAME),
         presets_file: data_dir.join(presets::FILE_NAME),
-        store: Store::new(data_dir.join(HISTORY_DIR)),
+        favorites_file: data_dir.join(favorites::FILE_NAME),
+        archive: Archive::new(history_dir.join(store::ARCHIVE_DIR)),
+        store: Store::new(history_dir),
         data_dir,
     };
     let state = app.state::<AppState>();
@@ -752,13 +968,36 @@ fn setup(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             Config::default()
         }
     };
+    let mut favorites = favorites::load(&paths.favorites_file).unwrap_or_else(|message| {
+        notices.push(format!("お気に入りを読めませんでした: {message}"));
+        Vec::new()
+    });
     {
         let mut history = state.history.lock().unwrap();
-        if let Err(message) = paths.store.load(&mut history) {
-            notices.push(format!("保存してあった履歴を読めませんでした: {message}"));
+        match paths.store.load(&mut history) {
+            Ok(pinned_texts) => {
+                // 0.7 までに固定してあった文字は、お気に入りへ移す
+                let mut moved = false;
+                for text in pinned_texts.into_iter().rev() {
+                    moved |= favorites::add(&mut favorites, text).unwrap_or(false);
+                }
+                if moved {
+                    if let Err(message) = favorites::save(&paths.favorites_file, &favorites) {
+                        notices.push(format!("お気に入りを保存できませんでした: {message}"));
+                    }
+                }
+            }
+            Err(message) => {
+                notices.push(format!("保存してあった履歴を読めませんでした: {message}"));
+            }
         }
+        // 上限から外れた分は、最初の読み取りのあとで保管へ回る
         history.set_max_items(config.history.max_items);
     }
+    if let Err(message) = tidy_archive(&paths.archive, &config.history) {
+        notices.push(format!("古い履歴を整理できませんでした: {message}"));
+    }
+    *state.favorites.lock().unwrap() = favorites;
     if let Err(message) = register_hotkey(app.handle(), &config.hotkey) {
         notices.push(message);
     }
@@ -797,6 +1036,7 @@ pub fn run() {
             paused: AtomicBool::new(false),
             window_alpha: AtomicU8::new(u8::MAX),
             pending_text: Mutex::new(None),
+            favorites: Mutex::new(Vec::new()),
             config: Mutex::new(Config::default()),
             paths: OnceLock::new(),
             startup_notices: Mutex::new(Vec::new()),
@@ -820,7 +1060,6 @@ pub fn run() {
             copy_item,
             set_paused,
             remove_item,
-            set_item_pinned,
             set_window_opacity,
             set_pinned,
             show_window,
@@ -833,11 +1072,20 @@ pub fn run() {
             get_config,
             set_history_limit,
             set_history_persist,
+            set_archive,
+            get_archive,
+            restore_archived,
             set_hotkey,
             suspend_hotkey,
             set_autostart,
             get_presets,
             copy_preset,
+            get_favorites,
+            add_favorite,
+            add_favorite_from_item,
+            remove_favorite_of_item,
+            remove_favorite,
+            copy_favorite,
             add_preset_from_item,
             create_preset,
             create_preset_folder,
@@ -847,6 +1095,7 @@ pub fn run() {
             remove_preset,
             reveal_presets_file,
             open_data_dir,
+            open_link,
         ])
         // 閉じるボタンや Alt+F4 では終了せず、通知領域に残す。終了は通知領域のメニューから。
         .on_window_event(|window, event| {

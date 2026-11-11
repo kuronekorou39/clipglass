@@ -1,7 +1,18 @@
 import { onDragRegionMouseDown } from "../windowDrag.js";
 
-/** 下部のバー。プリセットを開くボタン、絞り込みの開閉、設定。空いているところで移動できる。 */
-export function Footer({ presetsOpen, onPresetsToggle, filterOpen, filtering, onFilterToggle, onSettingsOpen }) {
+import { Icon } from "./Icon.jsx";
+
+/** 下部のバー。プリセットとお気に入りを開くボタン、絞り込みの開閉、設定。空いているところで移動できる。 */
+export function Footer({
+  presetsOpen,
+  onPresetsToggle,
+  favoritesOpen,
+  onFavoritesToggle,
+  filterOpen,
+  filtering,
+  onFilterToggle,
+  onSettingsOpen,
+}) {
   return (
     <div id="footer" data-drag-region onMouseDown={onDragRegionMouseDown}>
       <button
@@ -12,6 +23,16 @@ export function Footer({ presetsOpen, onPresetsToggle, filterOpen, filtering, on
         onClick={onPresetsToggle}
       >
         {"☰ プリセット"}
+      </button>
+      <button
+        class={`footer-btn${favoritesOpen ? " active" : ""}`}
+        title="お気に入りを開く"
+        aria-expanded={favoritesOpen}
+        aria-haspopup="dialog"
+        onClick={onFavoritesToggle}
+      >
+        <Icon name="star" />
+        お気に入り
       </button>
       <span class="footer-spacer" data-drag-region />
       <button

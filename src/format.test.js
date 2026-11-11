@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { fileName, formatTime, imageUrl, richFormatLabels } from "./format.js";
+import {
+  archiveImageUrl,
+  fileName,
+  formatBytes,
+  formatDay,
+  formatTime,
+  imageUrl,
+  richFormatLabels,
+} from "./format.js";
 
 describe("richFormatLabels", () => {
   it("プレーンテキストだけなら空", () => {
@@ -34,5 +42,26 @@ describe("formatTime", () => {
 describe("imageUrl", () => {
   it("種類とIDからURLを作る", () => {
     expect(imageUrl("thumb", 7)).toBe("http://clipimg.localhost/thumb/7");
+  });
+});
+
+describe("保管した項目の表示", () => {
+  it("サムネイルのURLは日とハッシュから作る", () => {
+    expect(archiveImageUrl("2026-11-09", "00ab")).toBe("http://clipimg.localhost/archive/2026-11-09/00ab");
+  });
+
+  it("日の見出しに、今日からの隔たりと曜日を添える", () => {
+    const today = new Date(2026, 10, 11, 23, 59);
+    expect(formatDay("2026-11-11", today)).toBe("今日 2026/11/11(水)");
+    expect(formatDay("2026-11-10", today)).toBe("昨日 2026/11/10(火)");
+    expect(formatDay("2026-11-01", today)).toBe("10日前 2026/11/1(日)");
+    // 月をまたいでも日数で数える
+    expect(formatDay("2026-10-31", today)).toBe("11日前 2026/10/31(土)");
+  });
+
+  it("大きさは KB か MB で出す", () => {
+    expect(formatBytes(0)).toBe("0 KB");
+    expect(formatBytes(1500)).toBe("2 KB");
+    expect(formatBytes(3.25 * 1024 * 1024)).toBe("3.3 MB");
   });
 });

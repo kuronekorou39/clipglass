@@ -1,6 +1,6 @@
 //! 実装上の上限値と調整値。
 
-/// 履歴に保持する項目数の初期値。固定した項目は数えない。
+/// 一覧に保持する項目数の初期値。
 pub const DEFAULT_HISTORY_MAX_ITEMS: usize = 100;
 /// 設定で選べる履歴の件数の上限。
 pub const HISTORY_MAX_ITEMS_LIMIT: usize = 500;
@@ -31,3 +31,16 @@ pub const CLIPBOARD_SETTLE_DELAY_MS: u32 = 50;
 
 /// 操作不能にならないための不透明度の下限。
 pub const MIN_WINDOW_OPACITY: f64 = 0.2;
+
+/// 一覧から外れた項目を保管する日数の初期値。0 なら保管しない。
+pub const DEFAULT_ARCHIVE_DAYS: u64 = 30;
+/// 設定で選べる保管日数の上限。
+pub const ARCHIVE_DAYS_LIMIT: u64 = 365;
+/// 保管全体の大きさの上限(MB)の初期値と、設定で選べる範囲。
+pub const DEFAULT_ARCHIVE_MAX_MB: u64 = 200;
+pub const ARCHIVE_MAX_MB_MIN: u64 = 10;
+pub const ARCHIVE_MAX_MB_LIMIT: u64 = 10_000;
+/// 保管した項目の一覧に出すテキストの最大文字数。検索は全文で行う。
+pub const ARCHIVE_PREVIEW_CHARS: usize = 500;
+/// 保管した項目を一度に読み込む件数の上限。
+pub const ARCHIVE_PAGE_LIMIT: usize = 200;

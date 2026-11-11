@@ -6,7 +6,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::limits::{DEFAULT_HISTORY_MAX_ITEMS, HISTORY_MAX_ITEMS_LIMIT};
+use crate::limits::{
+    ARCHIVE_DAYS_LIMIT, ARCHIVE_MAX_MB_LIMIT, ARCHIVE_MAX_MB_MIN, DEFAULT_ARCHIVE_DAYS,
+    DEFAULT_ARCHIVE_MAX_MB, DEFAULT_HISTORY_MAX_ITEMS, HISTORY_MAX_ITEMS_LIMIT,
+};
 
 pub const FILE_NAME: &str = "config.yaml";
 const BROKEN_FILE_NAME: &str = "config.broken.yaml";
@@ -20,10 +23,25 @@ const FILE_HEADER: &str = "# Clipglass の設定。アプリが書き換える�
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HistoryConfig {
-    /// 固定していない項目の上限。
+    /// 一覧に残す項目の上限。
     pub max_items: usize,
-    /// 固定していない項目もディスクに保存するかどうか(初期値は保存する)。固定した項目は常に保存する。
+    /// 履歴をディスクに保存するかどうか(初期値は保存する)。
     pub persist: bool,
+    /// 一覧から外れた項目を保管しておく日数。0 なら保管しない。
+    pub archive_days: u64,
+    /// 保管全体の大きさの上限(MB)。超えたら古い日から消す。
+    pub archive_max_mb: u64,
+}
+
+impl HistoryConfig {
+    /// 一覧から外れた項目を保管するか。ディスクに保存しない設定では保管もしない。
+    pub fn archives(&self) -> bool {
+        self.persist && self.archive_days > 0
+    }
+
+    pub fn archive_max_bytes(&self) -> u64 {
+        self.archive_max_mb.saturating_mul(1024 * 1024)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -39,6 +57,8 @@ impl Default for HistoryConfig {
         Self {
             max_items: DEFAULT_HISTORY_MAX_ITEMS,
             persist: true,
+            archive_days: DEFAULT_ARCHIVE_DAYS,
+            archive_max_mb: DEFAULT_ARCHIVE_MAX_MB,
         }
     }
 }
@@ -56,12 +76,22 @@ pub fn clamp_max_items(max_items: usize) -> usize {
     max_items.clamp(1, HISTORY_MAX_ITEMS_LIMIT)
 }
 
+pub fn clamp_archive_days(days: u64) -> u64 {
+    days.min(ARCHIVE_DAYS_LIMIT)
+}
+
+pub fn clamp_archive_max_mb(max_mb: u64) -> u64 {
+    max_mb.clamp(ARCHIVE_MAX_MB_MIN, ARCHIVE_MAX_MB_LIMIT)
+}
+
 pub fn parse(yaml: &str) -> Result<Config, String> {
     if yaml.trim().is_empty() {
         return Ok(Config::default());
     }
     let mut config: Config = serde_yaml_ng::from_str(yaml).map_err(|e| e.to_string())?;
     config.history.max_items = clamp_max_items(config.history.max_items);
+    config.history.archive_days = clamp_archive_days(config.history.archive_days);
+    config.history.archive_max_mb = clamp_archive_max_mb(config.history.archive_max_mb);
     config.hotkey = config.hotkey.trim().to_string();
     Ok(config)
 }
@@ -126,6 +156,33 @@ mod tests {
     }
 
     #[test]
+    fn archive_settings_default_and_are_clamped() {
+        // 0.7 までの設定ファイルには項目がないので、初期値で補う
+        let config = parse("history:\n  max_items: 50\n").unwrap();
+        assert_eq!(config.history.archive_days, DEFAULT_ARCHIVE_DAYS);
+        assert_eq!(config.history.archive_max_mb, DEFAULT_ARCHIVE_MAX_MB);
+        assert!(config.history.archives());
+
+        let config = parse("history:\n  archive_days: 9999\n  archive_max_mb: 1\n").unwrap();
+        assert_eq!(config.history.archive_days, ARCHIVE_DAYS_LIMIT);
+        assert_eq!(config.history.archive_max_mb, ARCHIVE_MAX_MB_MIN);
+        assert_eq!(
+            config.history.archive_max_bytes(),
+            ARCHIVE_MAX_MB_MIN * 1024 * 1024
+        );
+
+        // 0日、またはディスクに保存しない設定では保管しない
+        assert!(!parse("history:\n  archive_days: 0\n")
+            .unwrap()
+            .history
+            .archives());
+        assert!(!parse("history:\n  persist: false\n")
+            .unwrap()
+            .history
+            .archives());
+    }
+
+    #[test]
     fn roundtrip_through_file() {
         let dir = std::env::temp_dir().join(format!("clipglass-config-{}", std::process::id()));
         let path = dir.join("sub").join(FILE_NAME);
@@ -133,6 +190,8 @@ mod tests {
             history: HistoryConfig {
                 max_items: 30,
                 persist: true,
+                archive_days: 7,
+                archive_max_mb: 50,
             },
             hotkey: String::new(),
         };

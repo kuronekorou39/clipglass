@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
-import { flushSync } from "preact/compat";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -9,13 +8,17 @@ import {
   saveSettings,
   stepFontSize,
 } from "../settings.js";
-import { KINDS, filterItems, filterPresets } from "../search.js";
+import { KINDS, filterItems, filterPresets, folderPaths } from "../search.js";
+import { measureRows, playListMotion } from "../listMotion.js";
 import { Titlebar } from "./Titlebar.jsx";
 import { FilterBar } from "./FilterBar.jsx";
 import { Footer } from "./Footer.jsx";
 import { StatusRow } from "./StatusRow.jsx";
 import { HistoryItem } from "./HistoryItem.jsx";
 import { PresetPopover } from "./PresetPopover.jsx";
+import { FavoritesPopover } from "./FavoritesPopover.jsx";
+import { AddPresetDialog } from "./AddPresetDialog.jsx";
+import { ArchiveList } from "./ArchiveList.jsx";
 import { ItemMenu } from "./ItemMenu.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 import { ResizeHandles } from "./ResizeHandles.jsx";
@@ -43,11 +46,24 @@ export function App() {
   const [presets, setPresets] = useState([]);
   const [presetsError, setPresetsError] = useState(null);
   const [menu, setMenu] = useState(null);
+  const [favoritesOpen, setFavoritesOpen] = useState(false);
+  const [favorites, setFavorites] = useState([]);
+  // プリセットに加えようとしている履歴の項目。入れる場所を選ぶあいだ持つ
+  const [presetTarget, setPresetTarget] = useState(null);
   const toastTimer = useRef(null);
   const searchRef = useRef(null);
+  const historyRef = useRef(null);
+  // 行を滑らせるための、前の描画での行の位置と、そのときの履歴
+  const rowRects = useRef(new Map());
+  const animatedState = useRef(clipboard);
   // 閉じるアニメーションのあいだも描画を残す
   const presetsPresence = usePresence(presetsOpen);
+  const favoritesPresence = usePresence(favoritesOpen);
   const settingsPresence = usePresence(settingsOpen);
+  const presetTargetPresence = usePresence(presetTarget !== null);
+  // 閉じる途中も中身を描けるよう、最後に選んだ項目を残す
+  const lastPresetTarget = useRef(null);
+  if (presetTarget) lastPresetTarget.current = presetTarget;
 
   const updateSettings = useCallback((patch) => {
     setSettings((prev) => {
@@ -92,16 +108,16 @@ export function App() {
     })();
   }, []);
 
+  const loadFavorites = useCallback(async () => {
+    try {
+      setFavorites(await invoke("get_favorites"));
+    } catch (error) {
+      showToast(String(error), true);
+    }
+  }, []);
+
   useEffect(() => {
-    // 行の差し込みと並べ替えをアニメーションさせる
-    const applyAnimated = (next) => {
-      if (!document.startViewTransition) {
-        setClipboard(next);
-        return;
-      }
-      document.startViewTransition(() => flushSync(() => setClipboard(next)));
-    };
-    const unlistenState = listen(STATE_EVENT, (event) => applyAnimated(event.payload));
+    const unlistenState = listen(STATE_EVENT, (event) => setClipboard(event.payload));
     const unlistenNotice = listen(NOTICE_EVENT, (event) => showToast(event.payload, true));
     invoke("get_state").then(setClipboard);
     return () => {
@@ -110,6 +126,18 @@ export function App() {
     };
   }, []);
 
+  // 履歴が変わったら、行を前の位置から今の位置まで滑らせる。絞り込みで並びが変わっただけの
+  // ときは動かさないので、位置は毎回覚え直し、動かすのは履歴が変わったときだけにする
+  useLayoutEffect(() => {
+    const container = historyRef.current;
+    if (!container) return;
+    if (animatedState.current !== clipboard) {
+      animatedState.current = clipboard;
+      playListMotion(container, rowRects.current);
+    }
+    rowRects.current = measureRows(container);
+  });
+
   // プリセットはファイルを直接編集できるので、開くたびに読み直す
   useEffect(() => {
     if (!presetsOpen) return;
@@ -117,6 +145,19 @@ export function App() {
     window.addEventListener("focus", loadPresets);
     return () => window.removeEventListener("focus", loadPresets);
   }, [presetsOpen]);
+
+  useEffect(() => {
+    if (favoritesOpen) loadFavorites();
+  }, [favoritesOpen]);
+
+  // 入れる場所の選択肢に、今のフォルダーを出す
+  useEffect(() => {
+    if (presetTarget) loadPresets();
+  }, [presetTarget]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings.theme;
+  }, [settings.theme]);
 
   // 開いたらすぐ打ち込めるようにする
   useEffect(() => {
@@ -154,12 +195,15 @@ export function App() {
         setSettingsOpen(false);
         setMenu(null);
         setPresetsOpen(false);
+        setFavoritesOpen(false);
+        setPresetTarget(null);
         if (document.activeElement === searchRef.current) closeFilter();
         return;
       }
       if (!e.ctrlKey) return;
       if (e.key === "f" || e.key === "F") {
         setPresetsOpen(false);
+        setFavoritesOpen(false);
         setFilterOpen(true);
         searchRef.current?.focus();
         searchRef.current?.select();
@@ -248,16 +292,25 @@ export function App() {
     }
   }, []);
 
-  /** 押すだけで、プリセットの先頭に登録する。名前は1行目から作り、あとで編集できる。 */
-  const handleRegister = async (item) => {
-    const result = await call("add_preset_from_item", { id: item.id });
-    if (result.ok) {
-      showToast(`「${result.value}」をプリセットに登録しました`);
-      if (presetsOpen) loadPresets();
-    }
+  /** 選んだフォルダー(または新しく作るフォルダー)に、履歴の項目をプリセットとして加える。 */
+  const handleAddPreset = async ({ folder, newFolder }) => {
+    const result = await call("add_preset_from_item", { id: presetTarget.id, folder, newFolder });
+    if (!result.ok) return;
+    const place = result.value.slice(0, -1).join(" / ") || "先頭";
+    showToast(`「${result.value.at(-1)}」を ${place} に追加しました`);
+    setPresetTarget(null);
   };
 
+  const handleFavorite = async (item, favorite) => {
+    const command = favorite ? "add_favorite_from_item" : "remove_favorite_of_item";
+    const message = favorite ? "お気に入りに追加しました" : "お気に入りから外しました";
+    await call(command, { id: item.id }, message);
+  };
+
+  const paste = settings.pasteOnSelect;
   const { paused, status, currentId, items } = clipboard;
+  // 一覧から外れた項目を保管する設定か。しないなら「過去の履歴」を出さない
+  const archiving = Boolean(config?.historyPersist && config.archiveDays > 0);
   const filtering = query.trim() !== "" || kinds.length !== ALL_KINDS.length;
   const visibleItems = filtering ? filterItems(items, { query, kinds }) : items;
   const visiblePresets = filterPresets(presets, presetQuery);
@@ -289,7 +342,7 @@ export function App() {
         </div>
       )}
       {status && <StatusRow status={status} />}
-      <div id="history">
+      <div id="history" ref={historyRef}>
         {visibleItems.map((item) => (
           <HistoryItem
             key={item.id}
@@ -297,9 +350,11 @@ export function App() {
             current={item.id === currentId}
             wrap={settings.wrap}
             saving={saving}
-            onCopy={(plain) => invoke("copy_item", { id: item.id, plain })}
+            // 先頭行の「文字だけにする」は今の内容の入れ替えなので、貼り付けない
+            onCopy={(plain) =>
+              invoke("copy_item", { id: item.id, plain, paste: paste && item.id !== currentId })
+            }
             onSave={() => handleSave(item.id)}
-            onRegister={() => handleRegister(item)}
             onMenu={(position) => setMenu({ item, ...position })}
           />
         ))}
@@ -309,10 +364,29 @@ export function App() {
         {items.length > 0 && visibleItems.length === 0 && (
           <div class="empty-hint">一致する項目がありません</div>
         )}
+        {archiving && (
+          <ArchiveList
+            query={query}
+            kinds={kinds}
+            searching={filtering}
+            load={(args) => invoke("get_archive", args)}
+            onRestore={async (item) =>
+              (await call("restore_archived", { key: item.key, paste }, "一覧に戻してコピーしました")).ok
+            }
+          />
+        )}
       </div>
       <Footer
         presetsOpen={presetsOpen}
-        onPresetsToggle={() => setPresetsOpen((open) => !open)}
+        onPresetsToggle={() => {
+          setFavoritesOpen(false);
+          setPresetsOpen((open) => !open);
+        }}
+        favoritesOpen={favoritesOpen}
+        onFavoritesToggle={() => {
+          setPresetsOpen(false);
+          setFavoritesOpen((open) => !open);
+        }}
         filterOpen={filterOpen}
         filtering={filtering}
         onFilterToggle={() => (filterOpen ? closeFilter() : setFilterOpen(true))}
@@ -327,7 +401,7 @@ export function App() {
           query={presetQuery}
           onQueryChange={setPresetQuery}
           onCopy={async (path) => {
-            const result = await call("copy_preset", { path }, `「${path.at(-1)}」をコピーしました`);
+            const result = await call("copy_preset", { path, paste }, `「${path.at(-1)}」をコピーしました`);
             if (result.ok) setPresetsOpen(false);
           }}
           call={call}
@@ -336,12 +410,43 @@ export function App() {
           onClose={() => setPresetsOpen(false)}
         />
       )}
+      {favoritesPresence.mounted && (
+        <FavoritesPopover
+          closing={favoritesPresence.closing}
+          favorites={favorites}
+          onCopy={async (text) => {
+            const result = await call("copy_favorite", { text, paste }, "お気に入りをコピーしました");
+            if (result.ok) setFavoritesOpen(false);
+          }}
+          onRemove={async (text) => {
+            await call("remove_favorite", { text });
+            loadFavorites();
+          }}
+          onAdd={async (text) => {
+            const result = await call("add_favorite", { text });
+            if (result.ok) loadFavorites();
+            return result.ok;
+          }}
+          onClose={() => setFavoritesOpen(false)}
+        />
+      )}
+      {presetTargetPresence.mounted && lastPresetTarget.current && (
+        <AddPresetDialog
+          closing={presetTargetPresence.closing}
+          item={lastPresetTarget.current}
+          folders={folderPaths(presets)}
+          error={presetsError}
+          onSubmit={handleAddPreset}
+          onClose={() => setPresetTarget(null)}
+        />
+      )}
       {menu && (
         <ItemMenu
           item={menu.item}
           x={menu.x}
           y={menu.y}
-          onPin={(pinned) => call("set_item_pinned", { id: menu.item.id, pinned })}
+          onFavorite={(favorite) => handleFavorite(menu.item, favorite)}
+          onAddPreset={() => setPresetTarget(menu.item)}
           onRemove={() => call("remove_item", { id: menu.item.id })}
           onClose={() => setMenu(null)}
         />
@@ -353,6 +458,9 @@ export function App() {
           settings={settings}
           onFontSizeStep={handleFontSizeStep}
           onWrapChange={(wrap) => updateSettings({ wrap })}
+          onThemeChange={(theme) => updateSettings({ theme })}
+          onPasteChange={(pasteOnSelect) => updateSettings({ pasteOnSelect })}
+          onOpenLink={(target) => runOrToast(() => invoke("open_link", { target }))}
           onClose={() => setSettingsOpen(false)}
           onApply={applyConfig}
           onSuspendHotkey={(suspended) => runOrToast(() => invoke("suspend_hotkey", { suspended }))}

@@ -1,4 +1,4 @@
-//! 履歴のディスク保存。固定した項目は常に、それ以外は設定が有効なときだけ保存する。
+//! 履歴のディスク保存。設定が有効なときだけ、一覧にある項目を保存する。
 //!
 //! 一覧は `index.json` に、画像は `img-<ハッシュ>.png` と `.thumb.png` に分けて置く。
 //! 画像のファイルは新しいものだけ書き、参照されなくなったものは消す。
@@ -22,37 +22,40 @@ const IMAGE_SUFFIX: &str = ".png";
 const THUMB_SUFFIX: &str = ".thumb.png";
 /// 読めなかった履歴フォルダーの退避先に付ける接尾辞。後ろに日時が付く。
 const BROKEN_SUFFIX: &str = ".broken-";
+/// 一覧から外れた項目の保管先(`archive.rs`)。履歴フォルダーの中に置く。
+pub const ARCHIVE_DIR: &str = "archive";
 
 #[derive(Serialize, Deserialize)]
-struct RichRecord {
+pub(crate) struct RichRecord {
     name: String,
     /// Base64 にした中身。
     data: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct ImageRecord {
-    hash: u64,
-    width: u32,
-    height: u32,
+pub(crate) struct ImageRecord {
+    pub hash: u64,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-struct Record {
-    text: Option<String>,
-    rich: Vec<RichRecord>,
-    image: Option<ImageRecord>,
-    paths: Option<Vec<String>>,
-    formats: Vec<String>,
-    pinned: bool,
-    updated_at: u64,
+pub(crate) struct Record {
+    pub text: Option<String>,
+    pub rich: Vec<RichRecord>,
+    pub image: Option<ImageRecord>,
+    pub paths: Option<Vec<String>>,
+    pub formats: Vec<String>,
+    /// 0.7 までの「固定」。読むだけで、もう書かない(お気に入りへ移す)。
+    #[serde(skip_serializing)]
+    pub pinned: bool,
+    pub updated_at: u64,
 }
 
-fn to_record(item: &Item) -> Record {
+pub(crate) fn to_record(item: &Item) -> Record {
     let mut record = Record {
         formats: item.formats.clone(),
-        pinned: item.pinned,
         updated_at: item.updated_at,
         ..Record::default()
     };
@@ -79,6 +82,64 @@ fn to_record(item: &Item) -> Record {
     record
 }
 
+pub(crate) fn image_file_name(hash: u64, thumb: bool) -> String {
+    let suffix = if thumb { THUMB_SUFFIX } else { IMAGE_SUFFIX };
+    format!("{IMAGE_PREFIX}{hash:016x}{suffix}")
+}
+
+/// 画像とサムネイルを `dir` に書く。すでにあるファイルは書き直さない。
+pub(crate) fn write_images(dir: &Path, image: &StoredImage) -> Result<(), String> {
+    for (thumb, bytes) in [(false, &image.png), (true, &image.thumbnail)] {
+        let path = dir.join(image_file_name(image.hash, thumb));
+        if !path.exists() {
+            save::write_atomically(&path, bytes)?;
+        }
+    }
+    Ok(())
+}
+
+/// 記録を履歴の内容に戻す。画像は `image_dir` から読む。読めなければ `None`。
+pub(crate) fn restore(record: Record, image_dir: &Path) -> Option<Content> {
+    if let Some(text) = record.text {
+        let rich = record
+            .rich
+            .iter()
+            .filter_map(|format| {
+                Some(RichFormat {
+                    name: format.name.clone(),
+                    data: BASE64.decode(&format.data).ok()?,
+                })
+            })
+            .collect();
+        return Some(Content::Text { text, rich });
+    }
+    if let Some(image) = record.image {
+        let png = fs::read(image_dir.join(image_file_name(image.hash, false))).ok()?;
+        let thumbnail = fs::read(image_dir.join(image_file_name(image.hash, true))).ok()?;
+        return Some(Content::Image(StoredImage {
+            png: Arc::new(png),
+            thumbnail: Arc::new(thumbnail),
+            width: image.width,
+            height: image.height,
+            hash: image.hash,
+        }));
+    }
+    record.paths.map(Content::Files)
+}
+
+/// `dir` の直下にある画像のファイルのうち、`keep` にないものを消す。
+pub(crate) fn remove_images_except(dir: &Path, keep: &HashSet<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_image_file(&path) && !keep.contains(&path) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 pub struct Store {
     dir: PathBuf,
 }
@@ -92,47 +153,21 @@ impl Store {
         self.dir.join(INDEX_FILE)
     }
 
+    #[cfg(test)]
     fn image_path(&self, hash: u64, thumb: bool) -> PathBuf {
-        let suffix = if thumb { THUMB_SUFFIX } else { IMAGE_SUFFIX };
-        self.dir.join(format!("{IMAGE_PREFIX}{hash:016x}{suffix}"))
-    }
-
-    fn restore(&self, record: Record) -> Option<Content> {
-        if let Some(text) = record.text {
-            let rich = record
-                .rich
-                .iter()
-                .filter_map(|format| {
-                    Some(RichFormat {
-                        name: format.name.clone(),
-                        data: BASE64.decode(&format.data).ok()?,
-                    })
-                })
-                .collect();
-            return Some(Content::Text { text, rich });
-        }
-        if let Some(image) = record.image {
-            let png = fs::read(self.image_path(image.hash, false)).ok()?;
-            let thumbnail = fs::read(self.image_path(image.hash, true)).ok()?;
-            return Some(Content::Image(StoredImage {
-                png: Arc::new(png),
-                thumbnail: Arc::new(thumbnail),
-                width: image.width,
-                height: image.height,
-                hash: image.hash,
-            }));
-        }
-        record.paths.map(Content::Files)
+        self.dir.join(image_file_name(hash, thumb))
     }
 
     /// 保存してある項目を履歴の末尾に足す。読めない項目は飛ばす。
     ///
     /// 一覧そのものが読めない場合は、次の保存で消してしまわないよう
     /// フォルダーごと退避してから失敗を返す。
-    pub fn load(&self, history: &mut History) -> Result<(), String> {
+    ///
+    /// 0.7 までに固定してあった文字を返す。呼び出し側がお気に入りへ移す。
+    pub fn load(&self, history: &mut History) -> Result<Vec<String>, String> {
         let bytes = match fs::read(self.index_path()) {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e.to_string()),
         };
         let records: Vec<Record> = match serde_json::from_slice(&bytes) {
@@ -145,50 +180,47 @@ impl Store {
                 ));
             }
         };
+        let mut pinned_texts = Vec::new();
         for record in records {
             let formats = record.formats.clone();
             let (pinned, updated_at) = (record.pinned, record.updated_at);
-            if let Some(content) = self.restore(record) {
-                history.append_loaded(content, formats, pinned, updated_at);
+            if let Some(content) = restore(record, &self.dir) {
+                if let (true, Content::Text { text, .. }) = (pinned, &content) {
+                    pinned_texts.push(text.clone());
+                }
+                history.append_loaded(content, formats, updated_at);
             }
         }
-        Ok(())
+        Ok(pinned_texts)
     }
 
-    /// 履歴を書く。`persist_all` が偽なら固定した項目だけを書く。
-    pub fn save(&self, history: &History, persist_all: bool) -> Result<(), String> {
-        let items: Vec<&Item> = history
-            .items()
-            .iter()
-            .filter(|item| item.pinned || persist_all)
-            .collect();
-        if items.is_empty() {
+    /// 履歴を書く。`persist` が偽なら、保存してあるものを消す。
+    pub fn save(&self, history: &History, persist: bool) -> Result<(), String> {
+        let items = history.items();
+        if !persist || items.is_empty() {
             return self.clear();
         }
         fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
 
-        let records: Vec<Record> = items.iter().map(|item| to_record(item)).collect();
+        let records: Vec<Record> = items.iter().map(to_record).collect();
         let json = serde_json::to_vec(&records).map_err(|e| e.to_string())?;
         save::write_atomically(&self.index_path(), &json)?;
 
         let mut referenced = HashSet::new();
-        for item in &items {
+        for item in items {
             let Content::Image(image) = &item.content else {
                 continue;
             };
-            for (thumb, bytes) in [(false, &image.png), (true, &image.thumbnail)] {
-                let path = self.image_path(image.hash, thumb);
-                if !path.exists() {
-                    save::write_atomically(&path, bytes)?;
-                }
-                referenced.insert(path);
+            write_images(&self.dir, image)?;
+            for thumb in [false, true] {
+                referenced.insert(self.dir.join(image_file_name(image.hash, thumb)));
             }
         }
-        self.remove_images_except(&referenced);
+        remove_images_except(&self.dir, &referenced);
         Ok(())
     }
 
-    /// フォルダーを日時付きの名前に変えて退避する。
+    /// フォルダーを日時付きの名前に変えて退避する。保管(`archive`)は壊れていないので残す。
     fn move_aside(&self) -> Result<PathBuf, String> {
         let name = self
             .dir
@@ -200,6 +232,10 @@ impl Store {
             .dir
             .with_file_name(format!("{name}{BROKEN_SUFFIX}{stamp}"));
         fs::rename(&self.dir, &backup).map_err(|e| e.to_string())?;
+        let archive = backup.join(ARCHIVE_DIR);
+        if archive.is_dir() && fs::create_dir_all(&self.dir).is_ok() {
+            let _ = fs::rename(&archive, self.dir.join(ARCHIVE_DIR));
+        }
         Ok(backup)
     }
 
@@ -210,20 +246,8 @@ impl Store {
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(e.to_string()),
         }
-        self.remove_images_except(&HashSet::new());
+        remove_images_except(&self.dir, &HashSet::new());
         Ok(())
-    }
-
-    fn remove_images_except(&self, keep: &HashSet<PathBuf>) {
-        let Ok(entries) = fs::read_dir(&self.dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if is_image_file(&path) && !keep.contains(&path) {
-                let _ = fs::remove_file(path);
-            }
-        }
     }
 }
 
@@ -258,7 +282,7 @@ mod tests {
             1,
         );
         history.insert(Content::Files(vec!["C:\\a.txt".into()]), Vec::new(), 2);
-        let text_id = history.insert(
+        history.insert(
             Content::Text {
                 text: "本文".into(),
                 rich: vec![RichFormat {
@@ -269,7 +293,6 @@ mod tests {
             vec!["CF_UNICODETEXT".into(), "HTML Format".into()],
             3,
         );
-        history.set_pinned(text_id, true);
         history
     }
 
@@ -295,7 +318,6 @@ mod tests {
         store.load(&mut loaded).unwrap();
         assert_eq!(texts(&loaded), texts(&original));
         let item = &loaded.items()[0];
-        assert!(item.pinned);
         assert_eq!(item.updated_at, 3);
         assert_eq!(item.formats, original.items()[0].formats);
         match &item.content {
@@ -314,14 +336,48 @@ mod tests {
     }
 
     #[test]
-    fn only_pinned_items_are_kept_when_not_persisting() {
-        let store = temp_store("pinned");
+    fn nothing_is_kept_when_not_persisting() {
+        let store = temp_store("off");
+        store.save(&sample_history(), true).unwrap();
         store.save(&sample_history(), false).unwrap();
         let mut loaded = History::default();
         store.load(&mut loaded).unwrap();
-        assert_eq!(texts(&loaded), ["本文"]);
+        assert!(loaded.items().is_empty());
+        assert!(!store.index_path().exists());
         assert!(!store.image_path(0xabc, false).exists());
+        let _ = fs::remove_dir_all(&store.dir);
+    }
+
+    #[test]
+    fn pinned_texts_of_older_versions_are_returned_and_not_written_back() {
+        let store = temp_store("pinned");
+        fs::create_dir_all(&store.dir).unwrap();
+        let json =
+            r#"[{"text":"keep","pinned":true},{"text":"plain"},{"paths":["C:/a"],"pinned":true}]"#;
+        fs::write(store.index_path(), json).unwrap();
+        let mut loaded = History::default();
+        // 固定してあった文字だけを返す。項目そのものは普通の履歴として残る
+        assert_eq!(store.load(&mut loaded).unwrap(), ["keep"]);
+        assert_eq!(texts(&loaded), ["keep", "plain", "C:/a"]);
+        store.save(&loaded, true).unwrap();
+        assert!(!fs::read_to_string(store.index_path())
+            .unwrap()
+            .contains("pinned"));
         fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn archive_survives_moving_a_broken_history_aside() {
+        let store = temp_store("keep-archive");
+        let archive = store.dir.join(ARCHIVE_DIR);
+        fs::create_dir_all(&archive).unwrap();
+        fs::write(archive.join("x"), b"1").unwrap();
+        fs::write(store.index_path(), b"{not json").unwrap();
+        let backup = store.move_aside().unwrap();
+        assert_eq!(fs::read(archive.join("x")).unwrap(), b"1");
+        assert!(!backup.join(ARCHIVE_DIR).exists());
+        fs::remove_dir_all(&store.dir).unwrap();
+        fs::remove_dir_all(&backup).unwrap();
     }
 
     #[test]
@@ -404,7 +460,6 @@ mod tests {
             }
             _ => panic!("テキストではありません"),
         }
-        assert!(loaded.items()[0].pinned);
         fs::remove_dir_all(&store.dir).unwrap();
     }
 
@@ -418,26 +473,6 @@ mod tests {
         store.load(&mut loaded).unwrap();
         assert_eq!(texts(&loaded), ["first", "C:\\b", "last"]);
         assert_eq!(loaded.items()[2].updated_at, 5);
-        fs::remove_dir_all(&store.dir).unwrap();
-    }
-
-    #[test]
-    fn turning_persistence_off_keeps_pinned_images_only() {
-        let store = temp_store("toggle");
-        let mut history = sample_history();
-        let image_id = history.items()[2].id;
-        history.set_pinned(image_id, true);
-        store.save(&history, true).unwrap();
-        store.save(&history, false).unwrap();
-
-        let mut loaded = History::default();
-        store.load(&mut loaded).unwrap();
-        assert_eq!(texts(&loaded), ["本文", "image:abc"]);
-        assert!(store.image_path(0xabc, true).exists());
-
-        history.set_pinned(image_id, false);
-        store.save(&history, false).unwrap();
-        assert!(!store.image_path(0xabc, false).exists());
         fs::remove_dir_all(&store.dir).unwrap();
     }
 

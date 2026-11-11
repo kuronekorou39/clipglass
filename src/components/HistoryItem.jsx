@@ -1,5 +1,7 @@
 import { fileName, formatTime, imageUrl, richFormatLabels } from "../format.js";
+import { ROW_ATTR } from "../listMotion.js";
 import { RichBadge } from "./FormatBadges.jsx";
+import { Icon } from "./Icon.jsx";
 
 const MAX_FILE_NAMES = 5;
 
@@ -26,15 +28,6 @@ function SaveButton({ compact, disabled, onSave }) {
     <RowButton title="画像をPNGファイルとして保存" disabled={disabled} onClick={onSave}>
       {"↓"}
       {!compact && " 画像を保存"}
-    </RowButton>
-  );
-}
-
-function RegisterButton({ item, onRegister }) {
-  if (item.kind !== "text") return null;
-  return (
-    <RowButton title="プリセットの先頭に登録" onClick={onRegister}>
-      登録
     </RowButton>
   );
 }
@@ -73,7 +66,7 @@ function ItemData({ item, richFormats }) {
   );
 }
 
-function FileNames({ paths, limit }) {
+export function FileNames({ paths, limit }) {
   const rest = paths.length - limit;
   return (
     <ul class="file-names">
@@ -87,23 +80,30 @@ function FileNames({ paths, limit }) {
   );
 }
 
-/** 固定と削除は行に出さず、右クリックのメニューから行う。 */
-export function HistoryItem({ item, current, wrap, saving, onCopy, onSave, onRegister, onMenu }) {
+/**
+ * お気に入り・プリセットへの追加・削除は行に出さず、右クリックのメニューから行う。
+ * お気に入りに入っている文字の行には星を出す。
+ */
+export function HistoryItem({ item, current, wrap, saving, onCopy, onSave, onMenu }) {
   const isImage = item.kind === "image";
   const hasStoredRich = item.storedRich.length > 0;
   // 先頭行は今のクリップボードの中身を、それ以外は選び直したときに入る中身を示す。
   const richFormats = current ? item.formats : item.storedRich;
   const clipboardIsRich = richFormatLabels(item.formats).length > 0;
-  // 行ごとに名前を付けると、並べ替えのときに行が元の位置から移動して見える。
-  const style = { viewTransitionName: `item-${item.id}` };
-  const classes = ["item", current && "current", item.pinned && "pinned"].filter(Boolean).join(" ");
+  // 並べ替えのときに行を元の位置から滑らせるため、行にIDを付ける(listMotion.js)。
+  const row = { [ROW_ATTR]: item.id };
+  const classes = ["item", current && "current"].filter(Boolean).join(" ");
   const onContextMenu = (e) => {
     e.preventDefault();
     onMenu({ x: e.clientX, y: e.clientY });
   };
   const footer = (
     <div class="item-meta">
-      {item.pinned && <span class="badge-pinned">固定</span>}
+      {item.favorite && (
+        <span class="badge-fav" title="お気に入り" aria-label="お気に入り">
+          <Icon name="star" size={12} />
+        </span>
+      )}
       <ItemData item={item} richFormats={richFormats} />
       <span class="item-tools">
         {current && isImage && <SaveButton disabled={saving} onSave={onSave} />}
@@ -117,14 +117,13 @@ export function HistoryItem({ item, current, wrap, saving, onCopy, onSave, onReg
             書式付きに戻す
           </RowButton>
         )}
-        <RegisterButton item={item} onRegister={onRegister} />
       </span>
     </div>
   );
 
   if (current) {
     return (
-      <div class={classes} style={style} onContextMenu={onContextMenu}>
+      <div class={classes} {...row} onContextMenu={onContextMenu}>
         {isImage && (
           <div class="preview-image">
             <img class="checker" src={imageUrl("full", item.id)} alt="コピーした画像" />
@@ -142,10 +141,10 @@ export function HistoryItem({ item, current, wrap, saving, onCopy, onSave, onReg
   return (
     <div
       class={classes}
-      style={style}
+      {...row}
       role="button"
       tabIndex={0}
-      title={hasStoredRich ? "クリックで書式ごとコピー(右クリックで固定・削除)" : "クリックでコピー(右クリックで固定・削除)"}
+      title={hasStoredRich ? "クリックで書式ごとコピー(右クリックでメニュー)" : "クリックでコピー(右クリックでメニュー)"}
       onClick={() => onCopy(false)}
       onContextMenu={onContextMenu}
       onKeyDown={(e) => {

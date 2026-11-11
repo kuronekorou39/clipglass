@@ -7,7 +7,12 @@ import { act } from "preact/test-utils";
 const CONFIG = {
   historyMaxItems: 10,
   historyMaxItemsLimit: 200,
-  historyPersist: false,
+  historyPersist: true,
+  archiveDays: 30,
+  archiveDaysLimit: 365,
+  archiveMaxMb: 200,
+  archiveBytes: 3 * 1024 * 1024,
+  version: "9.9.9",
   hotkey: "Ctrl+Shift+V",
   autostart: false,
   dataDir: "C:/data",
@@ -26,16 +31,35 @@ function textItem(id, text) {
     paths: null,
     formats: [],
     storedRich: [],
-    pinned: false,
+    favorite: false,
     updatedAt: 0,
   };
 }
+
+function archivedItem(key, day, text) {
+  return {
+    key: `${day}/${key}`,
+    day,
+    kind: "text",
+    text,
+    charCount: text.length,
+    truncated: false,
+    width: null,
+    height: null,
+    paths: null,
+    imageHash: null,
+    updatedAt: 0,
+  };
+}
+
+const ARCHIVE = [archivedItem(2, "2026-11-09", "おとといの内容"), archivedItem(1, "2026-11-08", "もっと前の内容")];
+const FAVORITES = ["よく使う文字", "2行ある\nお気に入り"];
 
 const STATE = {
   paused: false,
   status: null,
   currentId: 1,
-  items: [textItem(1, "いまの内容"), textItem(2, "ひとつ前の内容")],
+  items: [textItem(1, "いまの内容"), { ...textItem(2, "ひとつ前の内容"), favorite: true }, textItem(3, "もうひとつ前")],
 };
 
 const PRESETS = [{ name: "挨拶", path: ["挨拶"], children: [{ name: "朝", path: ["挨拶", "朝"], text: "おはようございます" }] }];
@@ -73,6 +97,19 @@ async function type(element, value) {
 
 const $ = (selector) => root.querySelector(selector);
 const dialog = (label) => $(`[role="dialog"][aria-label="${label}"]`);
+const footerButton = (label) => [...root.querySelectorAll("#footer .footer-btn")].find((b) => b.textContent.includes(label));
+const tab = (label) => [...root.querySelectorAll('[role="tab"]')].find((el) => el.textContent === label);
+const archiveButton = (label) => [...root.querySelectorAll(".archive button")].find((b) => b.textContent.trim() === label);
+
+/** 行の右クリックのメニューを開く。 */
+async function menuOf(row) {
+  await act(async () => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 20 })));
+}
+
+/** 過去の履歴は、検索語の入力が落ち着くのを少し待ってから読む。 */
+async function archiveLoaded() {
+  await act(() => new Promise((resolve) => setTimeout(resolve, 300)));
+}
 
 beforeEach(async () => {
   localStorage.clear();
@@ -81,7 +118,12 @@ beforeEach(async () => {
     if (command === "get_config") return CONFIG;
     if (command === "get_state") return STATE;
     if (command === "get_presets") return PRESETS;
-    if (command === "add_preset_from_item") return "いまの内容";
+    if (command === "add_preset_from_item") return [...args.folder, ...(args.newFolder ? [args.newFolder] : []), "名前"];
+    if (command === "get_favorites") return FAVORITES;
+    if (command === "get_archive") {
+      const items = ARCHIVE.filter((item) => item.text.includes(args.query));
+      return { items: items.slice(args.offset, args.offset + 1), hasMore: args.offset + 1 < items.length };
+    }
     if (command === "update_preset") return [...args.path.slice(0, -1), args.name ?? args.text];
     if (command === "move_preset") return [...args.folder, args.path.at(-1)];
     if (command === "create_preset" || command === "create_preset_folder") {
@@ -111,28 +153,208 @@ describe("App", () => {
     expect(dialog("設定")).toBeNull();
   });
 
-  it("登録は押すだけで済み、フォームを出さない。そのあとも設定が開ける", async () => {
-    await click($('button[title="プリセットの先頭に登録"]'));
-    expect(invoke).toHaveBeenCalledWith("add_preset_from_item", { id: 1 });
-    expect($('[role="dialog"]')).toBeNull();
-    expect($(".toast").textContent).toContain("「いまの内容」をプリセットに登録しました");
+  it("行に「登録」「固定」のボタンはなく、右クリックのメニューで行う", async () => {
+    const row = root.querySelectorAll(".item")[2];
+    expect(row.textContent).not.toContain("登録");
+    expect(row.textContent).not.toContain("固定");
+    expect(row.querySelector(".danger")).toBeNull();
+    await menuOf(row);
+    const labels = [...root.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent);
+    expect(labels).toEqual(["お気に入りに追加", "プリセットに追加…", "履歴から削除"]);
+    await click(root.querySelectorAll('[role="menuitem"]')[2]);
+    expect(invoke).toHaveBeenCalledWith("remove_item", { id: 3 });
+    expect($('[role="menu"]')).toBeNull();
+  });
+
+  it("お気に入りの文字の行には星が付き、メニューで追加と解除を切り替える", async () => {
+    const [, starred, plain] = root.querySelectorAll(".item");
+    expect(starred.querySelector('[aria-label="お気に入り"]')).toBeTruthy();
+    expect(plain.querySelector('[aria-label="お気に入り"]')).toBeNull();
+    await menuOf(plain);
+    await click(root.querySelectorAll('[role="menuitem"]')[0]);
+    expect(invoke).toHaveBeenCalledWith("add_favorite_from_item", { id: 3 });
+    await menuOf(starred);
+    const toggle = root.querySelectorAll('[role="menuitem"]')[0];
+    expect(toggle.textContent).toBe("お気に入りから外す");
+    await click(toggle);
+    expect(invoke).toHaveBeenCalledWith("remove_favorite_of_item", { id: 2 });
+  });
+
+  it("プリセットへの追加は、入れる場所を選ぶか、フォルダーを作って入れる", async () => {
+    await menuOf(root.querySelectorAll(".item")[2]);
+    await click(root.querySelectorAll('[role="menuitem"]')[1]);
+    const form = dialog("プリセットに追加");
+    expect(form.textContent).toContain("もうひとつ前");
+    // 今あるフォルダーが選択肢に出る
+    expect([...form.querySelectorAll("option")].map((o) => o.textContent)).toEqual(["先頭", "挨拶"]);
+    // まだ登録しない
+    expect(invoke).not.toHaveBeenCalledWith("add_preset_from_item", expect.anything());
+    await act(async () => {
+      const select = form.querySelector("select");
+      select.value = "挨拶";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await type(form.querySelector('[aria-label="新しいフォルダー"]'), " 夜 ");
+    await act(async () => form.requestSubmit());
+    await act(async () => {});
+    expect(invoke).toHaveBeenCalledWith("add_preset_from_item", { id: 3, folder: ["挨拶"], newFolder: "夜" });
+    expect($(".toast").textContent).toContain("「名前」を 挨拶 / 夜 に追加しました");
+    await settle();
+    expect(dialog("プリセットに追加")).toBeNull();
+    // そのあとも、ほかの操作が効く
     await click($('button[aria-label="設定"]'));
     expect(dialog("設定")).toBeTruthy();
   });
 
-  it("行には固定と削除のボタンを出さず、右クリックのメニューで行う", async () => {
-    const row = root.querySelectorAll(".item")[1];
-    expect(row.textContent).not.toContain("固定");
-    expect(row.querySelector(".danger")).toBeNull();
-    await act(async () => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 10, clientY: 20 })));
-    const items = root.querySelectorAll('[role="menuitem"]');
-    expect(items.length).toBe(2);
-    await click(items[0]);
-    expect(invoke).toHaveBeenCalledWith("set_item_pinned", { id: 2, pinned: true });
-    expect($('[role="menu"]')).toBeNull();
-    await act(async () => row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true })));
+  it("フォルダーを作らなければ、選んだ場所にそのまま入れる", async () => {
+    await menuOf(root.querySelectorAll(".item")[2]);
     await click(root.querySelectorAll('[role="menuitem"]')[1]);
-    expect(invoke).toHaveBeenCalledWith("remove_item", { id: 2 });
+    await act(async () => dialog("プリセットに追加").requestSubmit());
+    await act(async () => {});
+    expect(invoke).toHaveBeenCalledWith("add_preset_from_item", { id: 3, folder: [], newFolder: null });
+    expect($(".toast").textContent).toContain("先頭 に追加しました");
+  });
+
+  it("お気に入りは下部のボタンから開き、フォルダーなしで並ぶ。選ぶとコピーして閉じる", async () => {
+    await click(footerButton("お気に入り"));
+    const popover = dialog("お気に入り");
+    const rows = [...popover.querySelectorAll(".favorite-row")];
+    // 複数行の文字は1行目を出す
+    expect(rows.map((row) => row.querySelector(".preset-text").textContent)).toEqual(["よく使う文字", "2行ある"]);
+    expect(popover.querySelector("details")).toBeNull();
+    await type(popover.querySelector('[aria-label="お気に入りを検索"]'), "2行");
+    expect(popover.querySelectorAll(".favorite-row").length).toBe(1);
+    await click(popover.querySelector(".favorite-row"));
+    expect(invoke).toHaveBeenCalledWith("copy_favorite", { text: "2行ある\nお気に入り", paste: true });
+    await settle();
+    expect(dialog("お気に入り")).toBeNull();
+  });
+
+  it("お気に入りは、その場で外したり、文字を入れて足したりできる", async () => {
+    await click(footerButton("お気に入り"));
+    const popover = dialog("お気に入り");
+    await click(popover.querySelector('[aria-label="外す"]'));
+    expect(invoke).toHaveBeenCalledWith("remove_favorite", { text: "よく使う文字" });
+    // 外すボタンではコピーしない
+    expect(invoke).not.toHaveBeenCalledWith("copy_favorite", expect.anything());
+    const form = popover.querySelector("form");
+    expect(form.querySelector("button").disabled).toBe(true);
+    await type(form.querySelector("input"), "新しい文字");
+    await act(async () => form.requestSubmit());
+    await act(async () => {});
+    expect(invoke).toHaveBeenCalledWith("add_favorite", { text: "新しい文字" });
+    expect(form.querySelector("input").value).toBe("");
+  });
+
+  it("プリセットとお気に入りは、どちらか片方だけが開く", async () => {
+    await click(footerButton("プリセット"));
+    await click(footerButton("お気に入り"));
+    await settle();
+    expect(dialog("プリセット")).toBeNull();
+    expect(dialog("お気に入り")).toBeTruthy();
+  });
+
+  it("2件目以降を選ぶとコピーして貼り付ける。設定で貼り付けを止められる", async () => {
+    await click(root.querySelectorAll(".item")[1]);
+    expect(invoke).toHaveBeenCalledWith("copy_item", { id: 2, plain: false, paste: true });
+    await click($('button[aria-label="設定"]'));
+    await click(tab("履歴"));
+    const toggle = [...root.querySelectorAll('[aria-label="設定"] [role="switch"]')].find((el) =>
+      el.textContent.includes("選んだら貼り付ける"),
+    );
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    await click(toggle);
+    expect(JSON.parse(localStorage.getItem("clipglass-settings")).pasteOnSelect).toBe(false);
+    await key({ key: "Escape" });
+    await settle();
+    await click(root.querySelectorAll(".item")[1]);
+    expect(invoke).toHaveBeenCalledWith("copy_item", { id: 2, plain: false, paste: false });
+  });
+
+  it("色合いは設定の「表示」で選び、<html> に付けて次回も使う", async () => {
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    await click($('button[aria-label="設定"]'));
+    const swatches = [...root.querySelectorAll(".theme-swatch")];
+    expect(swatches.map((b) => b.textContent)).toEqual(["ダーク", "ライト", "XP 風", "クラシック", "ターミナル"]);
+    // 見本は、その色合いの色で描く
+    expect(swatches[2].dataset.theme).toBe("xp");
+    expect(swatches[0].getAttribute("aria-pressed")).toBe("true");
+    await click(swatches[2]);
+    expect(document.documentElement.dataset.theme).toBe("xp");
+    expect(swatches[2].getAttribute("aria-pressed")).toBe("true");
+    expect(JSON.parse(localStorage.getItem("clipglass-settings")).theme).toBe("xp");
+  });
+
+  it("大きさを変える見えるつまみは、左下と右下の両方にある", async () => {
+    const grips = [...root.querySelectorAll(".resize-grip")];
+    expect(grips.map((grip) => grip.className)).toEqual(["resize-grip left", "resize-grip right"]);
+    const press = async (grip) =>
+      act(async () => grip.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })));
+    await press(grips[0]);
+    expect(invoke).toHaveBeenCalledWith("begin_window_drag", { kind: "sw" });
+    await press(grips[1]);
+    expect(invoke).toHaveBeenCalledWith("begin_window_drag", { kind: "se" });
+  });
+
+  it("過去の履歴はふだん畳んであり、開くと日ごとに並ぶ。続きを読み込める", async () => {
+    expect(invoke).not.toHaveBeenCalledWith("get_archive", expect.anything());
+    await click(archiveButton("過去の履歴を見る"));
+    await archiveLoaded();
+    expect(invoke).toHaveBeenCalledWith("get_archive", {
+      query: "",
+      kinds: ["text", "image", "files"],
+      offset: 0,
+      limit: 50,
+    });
+    const section = $(".archive");
+    expect(section.querySelectorAll(".item.archived").length).toBe(1);
+    expect(section.querySelector(".archive-day").textContent).toContain("2026/11/9");
+    await click(archiveButton("さらに読み込む"));
+    expect(section.querySelectorAll(".item.archived").length).toBe(2);
+    expect(section.querySelectorAll(".archive-day").length).toBe(2);
+    expect(archiveButton("さらに読み込む")).toBeUndefined();
+    // 保管した行は、一覧の行の並べ替えの対象にしない
+    expect(section.querySelector("[data-item-id]")).toBeNull();
+  });
+
+  it("過去の履歴の行を選ぶと、一覧に戻してコピーし、過去の履歴からは消える", async () => {
+    await click(archiveButton("過去の履歴を見る"));
+    await archiveLoaded();
+    await click($(".item.archived"));
+    expect(invoke).toHaveBeenCalledWith("restore_archived", { key: "2026-11-09/2", paste: true });
+    expect($(".item.archived")).toBeNull();
+  });
+
+  it("検索語は過去の履歴にも掛かる", async () => {
+    await click($('button[aria-label="検索と絞り込み"]'));
+    await type($("#search"), "もっと前");
+    await click(archiveButton("過去の履歴も探す"));
+    await archiveLoaded();
+    expect(invoke).toHaveBeenCalledWith("get_archive", expect.objectContaining({ query: "もっと前", offset: 0 }));
+    expect($(".item.archived").textContent).toContain("もっと前の内容");
+  });
+
+  it("設定の「情報」に、バージョンと使い方とリンクがある", async () => {
+    await click($('button[aria-label="設定"]'));
+    await click(tab("情報"));
+    const panel = dialog("設定");
+    expect(panel.textContent).toContain("バージョン 9.9.9");
+    expect(panel.querySelectorAll(".help-list dt").length).toBeGreaterThan(4);
+    expect(panel.textContent).toContain("Ctrl + F");
+    await click([...panel.querySelectorAll(".link-row button")].find((b) => b.textContent === "GitHub"));
+    expect(invoke).toHaveBeenCalledWith("open_link", { target: "repo" });
+  });
+
+  it("過去の履歴を残す日数と大きさは「履歴」で変える。保存しない設定では出さない", async () => {
+    await click($('button[aria-label="設定"]'));
+    await click(tab("履歴"));
+    const days = $('[aria-label="過去の履歴を残す日数"]');
+    expect(days.value).toBe("30");
+    expect(dialog("設定").textContent).toContain("いま 3.0 MB を保管中");
+    await type(days, "7");
+    await act(async () => days.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+    await act(async () => days.dispatchEvent(new FocusEvent("blur")));
+    expect(invoke).toHaveBeenCalledWith("set_archive", { days: 7, maxMb: 200 });
   });
 
   it("形式・時刻・文字数は「データ」にまとめて畳む。開いても再コピーしない", async () => {
@@ -175,7 +397,7 @@ describe("App", () => {
   it("設定はタブで分かれ、隅への配置は 2 × 2 に並ぶ", async () => {
     await click($('button[aria-label="設定"]'));
     const tabs = [...root.querySelectorAll('[aria-label="設定"] [role="tab"]')];
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["表示", "履歴", "起動", "ウィンドウ"]);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["表示", "履歴", "起動", "ウィンドウ", "情報"]);
     await click(tabs[3]);
     const corners = [...root.querySelectorAll(".corner-grid button")].map((b) => b.textContent);
     expect(corners).toEqual(["左上", "右上", "左下", "右下"]);
@@ -199,7 +421,7 @@ describe("App", () => {
   it("プリセットをコピーするとポップオーバーを閉じる", async () => {
     await click($("#footer .footer-btn"));
     await click($(".preset-leaf"));
-    expect(invoke).toHaveBeenCalledWith("copy_preset", { path: ["挨拶", "朝"] });
+    expect(invoke).toHaveBeenCalledWith("copy_preset", { path: ["挨拶", "朝"], paste: true });
     await settle();
     expect(dialog("プリセット")).toBeNull();
   });
@@ -210,13 +432,13 @@ describe("App", () => {
     const search = $("#search");
     expect(search).toBeTruthy();
     await act(async () => {
-      search.value = "ひとつ";
+      search.value = "ひとつ前の";
       search.dispatchEvent(new Event("input", { bubbles: true }));
     });
     expect(root.querySelectorAll(".item").length).toBe(1);
     await click($('button[aria-label="絞り込みを閉じる"]'));
     expect($("#search")).toBeNull();
-    expect(root.querySelectorAll(".item").length).toBe(2);
+    expect(root.querySelectorAll(".item").length).toBe(3);
   });
 
   it("プリセットを編集して、名前と文字の変更とフォルダーの移動を送る", async () => {
