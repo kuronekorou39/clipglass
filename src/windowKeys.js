@@ -32,3 +32,19 @@ export function windowKeyAction(event) {
   }
   return { dx: x * WINDOW_STEP, dy: y * WINDOW_STEP, dw: 0, dh: 0 };
 }
+
+/** 数字キーで選べる、一覧の先頭からの件数。 */
+export const QUICK_PICK_COUNT = 9;
+
+/**
+ * 数字キー 1〜9(テンキーも)を、一覧の先頭からの位置(0〜8)に変える。対象外なら null。
+ * 修飾キーとの組み合わせはほかの操作(Ctrl+0 の文字サイズなど)に残し、文字入力中も横取りしない。
+ */
+export function quickPickIndex(event) {
+  if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return null;
+  if (isEditing(event.target)) return null;
+  const match = /^(?:Digit|Numpad)([1-9])$/.exec(event.code ?? "");
+  if (!match) return null;
+  const index = Number(match[1]) - 1;
+  return index < QUICK_PICK_COUNT ? index : null;
+}

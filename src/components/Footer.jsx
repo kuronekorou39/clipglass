@@ -2,7 +2,10 @@ import { onDragRegionMouseDown } from "../windowDrag.js";
 
 import { Icon } from "./Icon.jsx";
 
-/** 下部のバー。プリセットとお気に入りを開くボタン、絞り込みの開閉、設定。空いているところで移動できる。 */
+/**
+ * 下部のバー。プリセットとお気に入りを開くボタン、絞り込みの開閉、設定。空いているところで移動できる。
+ * ウィンドウの幅が狭いときは、プリセットとお気に入りの文字を隠して記号だけにする(style.css)。
+ */
 export function Footer({
   presetsOpen,
   onPresetsToggle,
@@ -18,21 +21,24 @@ export function Footer({
       <button
         class={`footer-btn${presetsOpen ? " active" : ""}`}
         title="プリセットを開く"
+        aria-label="プリセット"
         aria-expanded={presetsOpen}
         aria-haspopup="dialog"
         onClick={onPresetsToggle}
       >
-        {"☰ プリセット"}
+        <span aria-hidden="true">{"☰"}</span>
+        <span class="footer-label">プリセット</span>
       </button>
       <button
         class={`footer-btn${favoritesOpen ? " active" : ""}`}
         title="お気に入りを開く"
+        aria-label="お気に入り"
         aria-expanded={favoritesOpen}
         aria-haspopup="dialog"
         onClick={onFavoritesToggle}
       >
         <Icon name="star" />
-        お気に入り
+        <span class="footer-label">お気に入り</span>
       </button>
       <span class="footer-spacer" data-drag-region />
       <button

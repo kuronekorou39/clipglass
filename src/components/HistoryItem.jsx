@@ -80,11 +80,20 @@ export function FileNames({ paths, limit }) {
   );
 }
 
+/** 行の頭に置く、数字キーの印。先頭から9件だけに付け、ほかの行は同じ幅だけ空けて頭をそろえる。 */
+function QuickKey({ number }) {
+  return (
+    <span class="item-key" aria-hidden={number ? undefined : true}>
+      {number && <kbd title={`${number} キーで選ぶ`}>{number}</kbd>}
+    </span>
+  );
+}
+
 /**
  * お気に入り・プリセットへの追加・削除は行に出さず、右クリックのメニューから行う。
- * お気に入りに入っている文字の行には星を出す。
+ * お気に入りに入っている文字の行には星を出す。`quickKey` は数字キーで選ぶときの番号(1〜9)。
  */
-export function HistoryItem({ item, current, wrap, saving, onCopy, onSave, onMenu }) {
+export function HistoryItem({ item, current, quickKey, wrap, saving, onCopy, onSave, onMenu }) {
   const isImage = item.kind === "image";
   const hasStoredRich = item.storedRich.length > 0;
   // 先頭行は今のクリップボードの中身を、それ以外は選び直したときに入る中身を示す。
@@ -124,16 +133,19 @@ export function HistoryItem({ item, current, wrap, saving, onCopy, onSave, onMen
   if (current) {
     return (
       <div class={classes} {...row} onContextMenu={onContextMenu}>
-        {isImage && (
-          <div class="preview-image">
-            <img class="checker" src={imageUrl("full", item.id)} alt="コピーした画像" />
-          </div>
-        )}
-        {item.kind === "text" && (
-          <pre class={`preview-text${wrap ? " wrap" : ""}`}>{item.text}</pre>
-        )}
-        {item.kind === "files" && <FileNames paths={item.paths} limit={MAX_FILE_NAMES} />}
-        {footer}
+        <QuickKey number={quickKey} />
+        <div class="item-main">
+          {isImage && (
+            <div class="preview-image">
+              <img class="checker" src={imageUrl("full", item.id)} alt="コピーした画像" />
+            </div>
+          )}
+          {item.kind === "text" && (
+            <pre class={`preview-text${wrap ? " wrap" : ""}`}>{item.text}</pre>
+          )}
+          {item.kind === "files" && <FileNames paths={item.paths} limit={MAX_FILE_NAMES} />}
+          {footer}
+        </div>
       </div>
     );
   }
@@ -155,22 +167,25 @@ export function HistoryItem({ item, current, wrap, saving, onCopy, onSave, onMen
         }
       }}
     >
-      <div class="item-body">
-        {isImage && (
-          <div class="thumb">
-            <img class="checker" src={imageUrl("thumb", item.id)} alt="コピーした画像" />
-          </div>
-        )}
-        {item.kind === "text" && <div class="item-text">{item.text}</div>}
-        {item.kind === "files" && <FileNames paths={item.paths} limit={1} />}
-        {isImage && <SaveButton compact disabled={saving} onSave={onSave} />}
-        {hasStoredRich && (
-          <RowButton title="書式を外し、文字だけをコピー" onClick={() => onCopy(true)}>
-            文字だけ
-          </RowButton>
-        )}
+      <QuickKey number={quickKey} />
+      <div class="item-main">
+        <div class="item-body">
+          {isImage && (
+            <div class="thumb">
+              <img class="checker" src={imageUrl("thumb", item.id)} alt="コピーした画像" />
+            </div>
+          )}
+          {item.kind === "text" && <div class="item-text">{item.text}</div>}
+          {item.kind === "files" && <FileNames paths={item.paths} limit={1} />}
+          {isImage && <SaveButton compact disabled={saving} onSave={onSave} />}
+          {hasStoredRich && (
+            <RowButton title="書式を外し、文字だけをコピー" onClick={() => onCopy(true)}>
+              文字だけ
+            </RowButton>
+          )}
+        </div>
+        {footer}
       </div>
-      {footer}
     </div>
   );
 }

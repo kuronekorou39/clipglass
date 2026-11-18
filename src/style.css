@@ -22,8 +22,6 @@
   /* 移動でよくつかむので太めに */
   --titlebar-height: 40px;
   --footer-height: 40px;
-  /* プリセットのポップオーバーと下部ボタンの間 */
-  --popover-gap: 10px;
 }
 
 /* === Themes === */
@@ -35,7 +33,7 @@
   --bg-primary-rgb: 10 14 20;
   --bg-secondary-rgb: 13 18 25;
   --bg-hover-rgb: 20 29 40;
-  /* 設定やポップオーバーは読みやすさを優先し、透かさない */
+  /* 設定やメニューは読みやすさを優先し、透かさない */
   --bg-solid: #0d1219;
   --bg-solid-input: #0a0e14;
   --border: #1a2233;
@@ -193,7 +191,6 @@
 }
 
 [data-theme="classic"] .panel,
-[data-theme="classic"] .popover,
 [data-theme="classic"] .menu {
   border: 2px outset #ffffff;
   border-radius: 0;
@@ -401,6 +398,48 @@ button {
   cursor: pointer;
 }
 
+/* 履歴の行は、頭の数字キーの印と中身を横に並べる(過去の履歴の行は中身だけ) */
+.item:has(> .item-main) {
+  flex-direction: row;
+  align-items: flex-start;
+  /* 印の列は左の余白に寄せ、中身の頭の位置をあまり動かさない */
+  padding-left: calc(var(--pad-x) * 0.5);
+}
+
+.item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+}
+
+/* 数字キーの印。番号のない行も同じ幅を空け、中身の頭をそろえる */
+.item-key {
+  flex: none;
+  width: 1.3em;
+  display: flex;
+  justify-content: center;
+}
+
+.item-key kbd {
+  min-width: 1.3em;
+  padding: 0 0.2em;
+  font-family: var(--font-mono);
+  font-size: 0.75em;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-light);
+  border-radius: 3px;
+}
+
+/* 先頭の行は上の余白が広いので、印も中身の1行目にそろえる */
+.item.current .item-key kbd {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .item:hover {
   background: var(--bg-hover);
 }
@@ -506,11 +545,12 @@ button {
 }
 
 /* === Preview of the current item === */
+/* 長い文字は見える範囲だけを出し、スクロールバーは出さない。選択のドラッグでも動かさない */
 .preview-text {
   font-family: var(--font-mono);
   color: var(--text-bright);
   max-height: 40vh;
-  overflow: auto;
+  overflow: clip;
   white-space: pre;
   tab-size: 4;
   user-select: text;
@@ -721,26 +761,13 @@ button {
 }
 
 /* === Presets === */
-/* 下部のボタンから開く。一覧の上に重ね、外側を押すと閉じる */
-.popover-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 10;
-}
-
+/* 下部のボタンから、本体の横の別ウィンドウ(Panel.jsx)に開く。一覧には重ねないので、
+   ウィンドウいっぱいに広げ、背景と縁は本体と同じく body と #app のものを使う */
 .popover {
-  position: absolute;
-  left: 6px;
-  bottom: calc(var(--footer-height) + var(--popover-gap));
-  /* 中身やフォルダーの開閉で変わらない大きさにする。大きなウィンドウでも広げすぎない */
-  width: min(400px, calc(100% - 18px));
-  height: min(460px, calc(100% - var(--titlebar-height) - var(--footer-height) - var(--popover-gap) - 8px));
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-solid);
-  border: 1px solid var(--border-light);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.6);
 }
 
 .popover-search {
@@ -975,6 +1002,7 @@ button {
 .titlebar-btn.filtering {
   color: var(--accent);
 }
+
 
 /* === Panels (settings, register) === */
 .overlay {
@@ -1670,18 +1698,9 @@ button {
   }
 }
 
-/* プリセットは下部のボタンから立ち上がる */
+/* 横の別ウィンドウは、開くたびに中身を少し浮かせて出す */
 .popover {
-  transform-origin: bottom left;
   animation: rise-in var(--open-duration) ease-out;
-}
-
-.popover-backdrop.closing {
-  pointer-events: none;
-}
-
-.popover-backdrop.closing .popover {
-  animation: rise-out var(--fade-duration) ease-in forwards;
 }
 
 /* 設定は背景を暗くしながら、パネルを少し浮かせて出す */
@@ -1745,5 +1764,82 @@ button {
   *::details-content {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+/* === Narrow window === */
+/* 他の規則を上書きするので、ファイルの末尾に置く */
+/* 幅が狭いときは、ボタンを記号だけにして1行に収める。題名も隠し、不透明度のつまみは短くする。
+   境目の幅は、下部の「プリセット」「お気に入り」が折り返し始める手前 */
+@media (max-width: 320px) {
+  .footer-label,
+  .titlebar-title {
+    display: none;
+  }
+
+  #titlebar {
+    justify-content: flex-end;
+    padding-left: 4px;
+  }
+
+  #opacity-slider {
+    width: 40px;
+    margin: 0 4px;
+  }
+
+  .titlebar-sep {
+    margin: 0 3px;
+  }
+
+  .footer-btn {
+    padding: 6px 8px;
+  }
+
+  /* 検索欄は1行を使い、種類のボタンは次の行へ */
+  #filter-bar {
+    flex-wrap: wrap;
+  }
+
+  #search {
+    flex-basis: 100%;
+  }
+
+  #filter-bar .chips {
+    flex: 1;
+  }
+
+  /* 設定は余白を詰め、項目名と操作が並ばなければ操作を次の行へ送る(項目名を縦に潰さない) */
+  .overlay {
+    padding: 4px;
+  }
+
+  .panel {
+    padding: 0.75em;
+  }
+
+  .setting-row,
+  .inline-fields {
+    flex-wrap: wrap;
+  }
+
+  .panel .inline-fields input[type="number"] {
+    width: 4em;
+  }
+
+  .corner-grid {
+    grid-template-columns: repeat(2, minmax(0, 6em));
+  }
+
+  .corner-grid .row-btn {
+    padding-inline: 0.3em;
+  }
+
+  /* 使い方は、操作の名前の下に説明を置く */
+  .help-list {
+    grid-template-columns: 1fr;
+  }
+
+  .help-list dd {
+    margin-bottom: 0.4em;
   }
 }

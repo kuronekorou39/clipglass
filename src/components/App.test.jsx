@@ -66,7 +66,18 @@ const PRESETS = [{ name: "挨拶", path: ["挨拶"], children: [{ name: "朝", p
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args) => invoke(...args) }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+// Rust から届くイベントを、テストから送れるようにする
+const listeners = new Map();
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (name, handler) => {
+    listeners.set(name, handler);
+    return () => listeners.delete(name);
+  },
+}));
+
+async function fire(name, payload) {
+  await act(async () => listeners.get(name)({ payload }));
+}
 
 const { App } = await import("./App.jsx");
 const { EXIT_DURATION_MS } = await import("../presence.js");
@@ -213,45 +224,6 @@ describe("App", () => {
     await act(async () => {});
     expect(invoke).toHaveBeenCalledWith("add_preset_from_item", { id: 3, folder: [], newFolder: null });
     expect($(".toast").textContent).toContain("先頭 に追加しました");
-  });
-
-  it("お気に入りは下部のボタンから開き、フォルダーなしで並ぶ。選ぶとコピーして閉じる", async () => {
-    await click(footerButton("お気に入り"));
-    const popover = dialog("お気に入り");
-    const rows = [...popover.querySelectorAll(".favorite-row")];
-    // 複数行の文字は1行目を出す
-    expect(rows.map((row) => row.querySelector(".preset-text").textContent)).toEqual(["よく使う文字", "2行ある"]);
-    expect(popover.querySelector("details")).toBeNull();
-    await type(popover.querySelector('[aria-label="お気に入りを検索"]'), "2行");
-    expect(popover.querySelectorAll(".favorite-row").length).toBe(1);
-    await click(popover.querySelector(".favorite-row"));
-    expect(invoke).toHaveBeenCalledWith("copy_favorite", { text: "2行ある\nお気に入り", paste: true });
-    await settle();
-    expect(dialog("お気に入り")).toBeNull();
-  });
-
-  it("お気に入りは、その場で外したり、文字を入れて足したりできる", async () => {
-    await click(footerButton("お気に入り"));
-    const popover = dialog("お気に入り");
-    await click(popover.querySelector('[aria-label="外す"]'));
-    expect(invoke).toHaveBeenCalledWith("remove_favorite", { text: "よく使う文字" });
-    // 外すボタンではコピーしない
-    expect(invoke).not.toHaveBeenCalledWith("copy_favorite", expect.anything());
-    const form = popover.querySelector("form");
-    expect(form.querySelector("button").disabled).toBe(true);
-    await type(form.querySelector("input"), "新しい文字");
-    await act(async () => form.requestSubmit());
-    await act(async () => {});
-    expect(invoke).toHaveBeenCalledWith("add_favorite", { text: "新しい文字" });
-    expect(form.querySelector("input").value).toBe("");
-  });
-
-  it("プリセットとお気に入りは、どちらか片方だけが開く", async () => {
-    await click(footerButton("プリセット"));
-    await click(footerButton("お気に入り"));
-    await settle();
-    expect(dialog("プリセット")).toBeNull();
-    expect(dialog("お気に入り")).toBeTruthy();
   });
 
   it("2件目以降を選ぶとコピーして貼り付ける。設定で貼り付けを止められる", async () => {
@@ -405,27 +377,6 @@ describe("App", () => {
     expect(invoke).toHaveBeenCalledWith("snap_window", { corner: "bottom-right" });
   });
 
-  it("タブはなく、プリセットは下部のボタンからポップオーバーで開く", async () => {
-    expect(root.textContent).not.toContain("履歴プリセット");
-    expect($('[role="tab"]')).toBeNull();
-    // 開いても履歴の一覧は残る
-    await click($("#footer .footer-btn"));
-    expect(dialog("プリセット")).toBeTruthy();
-    expect($("#history")).toBeTruthy();
-    expect(root.textContent).toContain("朝");
-    await key({ key: "Escape" });
-    await settle();
-    expect(dialog("プリセット")).toBeNull();
-  });
-
-  it("プリセットをコピーするとポップオーバーを閉じる", async () => {
-    await click($("#footer .footer-btn"));
-    await click($(".preset-leaf"));
-    expect(invoke).toHaveBeenCalledWith("copy_preset", { path: ["挨拶", "朝"], paste: true });
-    await settle();
-    expect(dialog("プリセット")).toBeNull();
-  });
-
   it("絞り込みはふだん閉じていて、開閉できる。閉じると条件も解く", async () => {
     expect($("#search")).toBeNull();
     await click($('button[aria-label="検索と絞り込み"]'));
@@ -439,75 +390,6 @@ describe("App", () => {
     await click($('button[aria-label="絞り込みを閉じる"]'));
     expect($("#search")).toBeNull();
     expect(root.querySelectorAll(".item").length).toBe(3);
-  });
-
-  it("プリセットを編集して、名前と文字の変更とフォルダーの移動を送る", async () => {
-    await click($("#footer .footer-btn"));
-    await click($('.preset-leaf [aria-label="編集"]'));
-    // 編集を始めてもコピーしない
-    expect(invoke).not.toHaveBeenCalledWith("copy_preset", expect.anything());
-    const form = $('form[aria-label="プリセットを編集"]');
-    // 編集中も一覧は見えていて、編集中の行に印が付く
-    expect($(".preset-leaf.editing").textContent).toContain("朝");
-    // 値(文字)が先で、説明はそのあと
-    const fields = [...form.querySelectorAll("textarea, input")].map((el) => el.getAttribute("aria-label"));
-    expect(fields.indexOf("文字")).toBeLessThan(fields.indexOf("説明"));
-    await type(form.querySelector('[aria-label="説明"]'), "おはよう");
-    await type(form.querySelector('[aria-label="文字"]'), "おはようございます!");
-    await act(async () => {
-      const select = form.querySelector("select");
-      select.value = "";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    await act(async () => form.requestSubmit());
-    await act(async () => {});
-    expect(invoke).toHaveBeenCalledWith("update_preset", {
-      path: ["挨拶", "朝"],
-      name: "おはよう",
-      text: "おはようございます!",
-    });
-    expect(invoke).toHaveBeenCalledWith("move_preset", { path: ["挨拶", "おはよう"], folder: [] });
-    // 保存したら一覧に戻る(名前の変更と移動の2回を待つ)
-    await act(async () => {});
-    expect($("form.preset-editor")).toBeNull();
-  });
-
-  it("プリセットとフォルダーを新しく作れる", async () => {
-    await click($("#footer .footer-btn"));
-    // 下部は「フォルダー」が先、「プリセット」が後
-    const footerLabels = [...root.querySelectorAll(".presets-footer button")].map((b) => b.textContent.trim());
-    expect(footerLabels.indexOf("フォルダー")).toBeLessThan(footerLabels.indexOf("プリセット"));
-    await click([...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent.includes("プリセット")));
-    const form = $('form[aria-label="プリセットを作成"]');
-    // 作成中も元のプリセットは隠れない
-    expect($(".preset-leaf").textContent).toContain("朝");
-    // 新規作成では入れる場所(フォルダー)が、文字より先に来る
-    const order = [...form.querySelectorAll("select, textarea")].map((el) => el.getAttribute("aria-label"));
-    expect(order.indexOf("入れる場所")).toBeLessThan(order.indexOf("文字"));
-    // 説明は任意。文字だけで作れる
-    await type(form.querySelector('[aria-label="文字"]'), "山田\n太郎");
-    await act(async () => form.requestSubmit());
-    await act(async () => {});
-    expect(invoke).toHaveBeenCalledWith("create_preset", { folder: [], name: null, text: "山田\n太郎" });
-
-    await act(async () => {});
-    await click([...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent.includes("フォルダー")));
-    const folderForm = $('form[aria-label="フォルダーを作成"]');
-    expect(folderForm.querySelector("textarea")).toBeNull();
-    await type(folderForm.querySelector('[aria-label="名前"]'), "仕事");
-    await act(async () => folderForm.requestSubmit());
-    expect(invoke).toHaveBeenCalledWith("create_preset_folder", { folder: [], name: "仕事" });
-  });
-
-  it("フォルダーは自分の中へ移す先を選べず、削除は確かめてから行う", async () => {
-    await click($("#footer .footer-btn"));
-    await click($('.preset-folder [aria-label="編集"]'));
-    const form = $('form[aria-label="フォルダーを編集"]');
-    expect([...form.querySelectorAll("option")].map((o) => o.textContent)).toEqual(["先頭"]);
-    await click(form.querySelector('[aria-label="削除"]'));
-    expect(invoke).not.toHaveBeenCalledWith("remove_preset", expect.anything());
-    await click([...form.querySelectorAll("button")].find((b) => b.textContent === "中身ごと削除"));
-    expect(invoke).toHaveBeenCalledWith("remove_preset", { path: ["挨拶"] });
   });
 
   it("ショートカットはキーを押して記録し、記録のあいだは今のショートカットを止める", async () => {
@@ -583,11 +465,51 @@ describe("App", () => {
     expect(root.textContent).not.toContain("ウィンドウ全体");
   });
 
-  it("プリセットのファイルの場所をエクスプローラーで表示できる", async () => {
-    await click($("#footer .footer-btn"));
-    const buttons = [...root.querySelectorAll(".presets-footer button")];
-    expect(buttons.map((b) => b.textContent)).not.toContain("ファイル");
-    await click(buttons.find((b) => b.textContent === "場所"));
-    expect(invoke).toHaveBeenCalledWith("reveal_presets_file");
+  it("プリセットとお気に入りは本体の横の別ウィンドウで開き、一覧には重ねない", async () => {
+    expect(root.textContent).not.toContain("履歴プリセット");
+    expect($('[role="tab"]')).toBeNull();
+    await click(footerButton("プリセット"));
+    expect(invoke).toHaveBeenCalledWith("toggle_panel", { kind: "presets" });
+    // 本体のウィンドウの中には出さない
+    expect(dialog("プリセット")).toBeNull();
+    // 開いている方のボタンに印を付ける
+    await fire("panel", "presets");
+    expect(footerButton("プリセット").getAttribute("aria-expanded")).toBe("true");
+    expect(footerButton("お気に入り").getAttribute("aria-expanded")).toBe("false");
+    await click(footerButton("お気に入り"));
+    expect(invoke).toHaveBeenCalledWith("toggle_panel", { kind: "favorites" });
+    await fire("panel", null);
+    expect(footerButton("プリセット").getAttribute("aria-expanded")).toBe("false");
+    // Esc で別ウィンドウも閉じる
+    await key({ key: "Escape" });
+    expect(invoke).toHaveBeenCalledWith("close_panel");
+  });
+
+  it("一覧の先頭から9件の頭に数字が付き、数字キーで選ぶと貼り付ける", async () => {
+    const keys = [...root.querySelectorAll(".item .item-key")].map((el) => el.textContent);
+    expect(keys).toEqual(["1", "2", "3"]);
+    await key({ code: "Digit3", key: "3" });
+    expect(invoke).toHaveBeenCalledWith("copy_item", { id: 3, plain: false, paste: true });
+    // 先頭(今の中身)も選べる。テンキーでもよい
+    await key({ code: "Numpad1", key: "1" });
+    expect(invoke).toHaveBeenCalledWith("copy_item", { id: 1, plain: false, paste: true });
+  });
+
+  it("数字キーは、絞り込んだ一覧の並びで数え、文字の入力中や設定を開いているあいだは使わない", async () => {
+    await click($('button[aria-label="検索と絞り込み"]'));
+    await type($("#search"), "もうひとつ");
+    expect([...root.querySelectorAll(".item .item-key")].map((el) => el.textContent)).toEqual(["1"]);
+    // 検索欄では数字をそのまま打てる
+    await act(async () =>
+      $("#search").dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "Digit1", key: "1" })),
+    );
+    expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
+    $("#search").blur();
+    await key({ code: "Digit1", key: "1" });
+    expect(invoke).toHaveBeenCalledWith("copy_item", { id: 3, plain: false, paste: true });
+    invoke.mockClear();
+    await click($('button[aria-label="設定"]'));
+    await key({ code: "Digit2", key: "2" });
+    expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
   });
 });

@@ -22,7 +22,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::http::{header, Response, StatusCode};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{App, AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent};
+use tauri::{
+    App, AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
+};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -41,6 +44,16 @@ use presets::NodeView;
 use store::Store;
 
 const MAIN_WINDOW: &str = "main";
+/// プリセットとお気に入りを出す、本体の横の別ウィンドウ。一覧に重ねないために分けている。
+const PANEL_WINDOW: &str = "panel";
+/// 別ウィンドウに出せる中身。
+const PANEL_KINDS: [&str; 2] = ["presets", "favorites"];
+/// 別ウィンドウの中身が変わったこと(閉じたときは null)をUIへ伝えるイベント。
+const PANEL_EVENT: &str = "panel";
+/// 別ウィンドウの幅と最小の高さ、本体との間(論理ピクセル)。高さは本体に合わせる。
+const PANEL_WIDTH: f64 = 380.0;
+const PANEL_MIN_HEIGHT: f64 = 360.0;
+const PANEL_GAP: f64 = 6.0;
 /// 履歴の画像をUIへ渡すURLスキーム。`/full/<id>` と `/thumb/<id>` を返す。
 const IMAGE_SCHEME: &str = "clipimg";
 /// 履歴の保存やショートカットの登録など、状態行に出さない通知をUIへ送るイベント。
@@ -89,6 +102,8 @@ pub struct AppState {
     paths: OnceLock<Paths>,
     /// UIが起動する前に起きた問題。最初の設定の取得で渡す。
     startup_notices: Mutex<Vec<String>>,
+    /// 横の別ウィンドウに出している中身(`PANEL_KINDS` のどれか)。閉じていれば None。
+    panel: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -392,8 +407,98 @@ fn reset_window_size(window: WebviewWindow) -> Result<(), String> {
 
 /// 通知領域に残して、ウィンドウだけを隠す。
 #[tauri::command]
-fn hide_window(window: WebviewWindow) -> Result<(), String> {
+fn hide_window(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    hide_panel(&app);
     window.hide().map_err(|e| e.to_string())
+}
+
+/// 横の別ウィンドウを本体の横へ置き直す。高さは本体に合わせる(低すぎるときは最小の高さ)。
+fn place_panel(app: &AppHandle) -> Result<(), String> {
+    let (Some(main), Some(panel)) = (
+        app.get_webview_window(MAIN_WINDOW),
+        app.get_webview_window(PANEL_WINDOW),
+    ) else {
+        return Ok(());
+    };
+    let current = placement(&main)?;
+    let physical = |value: f64| (value * current.scale).round() as i64;
+    let size = (
+        physical(PANEL_WIDTH),
+        current.rect.height.max(physical(PANEL_MIN_HEIGHT)),
+    );
+    let rect = placement::beside(
+        current.rect,
+        size,
+        current.current_area,
+        physical(PANEL_GAP),
+    );
+    apply_rect(&panel, rect)
+}
+
+/// 横の別ウィンドウ。初めて開くときに作り、閉じても破棄せず隠しておく。
+fn panel_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(PANEL_WINDOW) {
+        return Ok(window);
+    }
+    WebviewWindowBuilder::new(app, PANEL_WINDOW, WebviewUrl::App("index.html".into()))
+        .title("Clipglass")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+fn set_panel(app: &AppHandle, kind: Option<String>) {
+    *app.state::<AppState>().panel.lock().unwrap() = kind.clone();
+    let _ = app.emit(PANEL_EVENT, kind);
+}
+
+fn panel_open(app: &AppHandle) -> bool {
+    app.state::<AppState>().panel.lock().unwrap().is_some()
+}
+
+fn hide_panel(app: &AppHandle) {
+    if !panel_open(app) {
+        return;
+    }
+    if let Some(window) = app.get_webview_window(PANEL_WINDOW) {
+        let _ = window.hide();
+    }
+    set_panel(app, None);
+}
+
+/// 横の別ウィンドウで `kind` を開く。同じものが開いていれば閉じる。
+/// Windows では同期のコマンドでウィンドウを作ると止まるため、非同期にしている。
+#[tauri::command]
+async fn toggle_panel(app: AppHandle, kind: String) -> Result<(), String> {
+    if !PANEL_KINDS.contains(&kind.as_str()) {
+        return Err(format!("開けない中身です: {kind}"));
+    }
+    let open = app.state::<AppState>().panel.lock().unwrap().clone();
+    if open.as_deref() == Some(kind.as_str()) {
+        hide_panel(&app);
+        return Ok(());
+    }
+    let panel = panel_window(&app)?;
+    set_panel(&app, Some(kind));
+    place_panel(&app)?;
+    panel.show().map_err(|e| e.to_string())?;
+    panel.set_focus().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn close_panel(app: AppHandle) {
+    hide_panel(&app);
+}
+
+/// 横の別ウィンドウに出す中身。別ウィンドウのUIが起動したときに読む。
+#[tauri::command]
+fn get_panel(state: State<AppState>) -> Option<String> {
+    state.panel.lock().unwrap().clone()
 }
 
 fn show_main_window(app: &AppHandle) {
@@ -411,10 +516,15 @@ fn toggle_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
+    // 横の別ウィンドウを操作中も、前面にあるとみなす
+    let panel_focused = app
+        .get_webview_window(PANEL_WINDOW)
+        .is_some_and(|panel| panel.is_focused().unwrap_or(false));
     let in_front = window.is_visible().unwrap_or(false)
         && !window.is_minimized().unwrap_or(false)
-        && window.is_focused().unwrap_or(false);
+        && (window.is_focused().unwrap_or(false) || panel_focused);
     if in_front {
+        hide_panel(app);
         let _ = window.hide();
     } else {
         show_main_window(app);
@@ -1027,6 +1137,8 @@ pub fn run() {
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::POSITION | StateFlags::SIZE)
+                // 横の別ウィンドウは開くたびに本体の横へ置くので、位置を覚えない
+                .with_denylist(&[PANEL_WINDOW])
                 .build(),
         )
         .manage(AppState {
@@ -1040,6 +1152,7 @@ pub fn run() {
             config: Mutex::new(Config::default()),
             paths: OnceLock::new(),
             startup_notices: Mutex::new(Vec::new()),
+            panel: Mutex::new(None),
         })
         .register_uri_scheme_protocol(IMAGE_SCHEME, |context, request| {
             let (status, body) = match image_response(context.app_handle(), request.uri().path()) {
@@ -1096,13 +1209,26 @@ pub fn run() {
             reveal_presets_file,
             open_data_dir,
             open_link,
+            toggle_panel,
+            close_panel,
+            get_panel,
         ])
         // 閉じるボタンや Alt+F4 では終了せず、通知領域に残す。終了は通知領域のメニューから。
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        // 横の別ウィンドウも同じで、本体と一緒に隠す。本体を動かしたら別ウィンドウも付いていく。
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
+                hide_panel(window.app_handle());
             }
+            WindowEvent::Moved(_) | WindowEvent::Resized(_)
+                if window.label() == MAIN_WINDOW
+                    && !window.is_minimized().unwrap_or(false)
+                    && panel_open(window.app_handle()) =>
+            {
+                let _ = place_panel(window.app_handle());
+            }
+            _ => {}
         })
         .setup(|app| setup(app))
         .run(tauri::generate_context!())

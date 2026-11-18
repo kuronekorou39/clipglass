@@ -100,6 +100,30 @@ pub fn snap(rect: Rect, corner: Corner, area: Rect, margin: i64, min: (i64, i64)
     clamp_into(Rect { x, y, ..fitted }, area, min)
 }
 
+/// 本体の横に出す別ウィンドウ(プリセット・お気に入り)の位置。右に入れば右、入らなければ
+/// 左に `gap` だけ離して置き、上端を本体にそろえる。どちらにも入らなければ右に置いて
+/// 作業領域に収める(本体には重なる)。
+pub fn beside(anchor: Rect, size: (i64, i64), area: Rect, gap: i64) -> Rect {
+    let (width, height) = size;
+    let right = anchor.x + anchor.width + gap;
+    let left = anchor.x - gap - width;
+    let x = if right + width <= area.x + area.width || left < area.x {
+        right
+    } else {
+        left
+    };
+    clamp_into(
+        Rect {
+            x,
+            y: anchor.y,
+            width,
+            height,
+        },
+        area,
+        (0, 0),
+    )
+}
+
 /// マウスでの移動か、どの辺・隅でのサイズ変更か。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DragKind {
@@ -207,6 +231,30 @@ mod tests {
             width,
             height,
         }
+    }
+
+    #[test]
+    fn side_window_goes_right_then_left_then_stays_on_screen() {
+        // 右に入れば右に、上端をそろえて置く
+        assert_eq!(
+            beside(rect(100, 200, 420, 480), (380, 480), SCREEN, 8),
+            rect(528, 200, 380, 480)
+        );
+        // 右端に寄せた本体なら左へ
+        assert_eq!(
+            beside(rect(1500, 200, 420, 480), (380, 480), SCREEN, 8),
+            rect(1112, 200, 380, 480)
+        );
+        // 下にはみ出す分は上へずらす
+        assert_eq!(
+            beside(rect(100, 800, 420, 480), (380, 480), SCREEN, 8),
+            rect(528, 560, 380, 480)
+        );
+        // 左右どちらにも入らなければ、画面の中に収める
+        assert_eq!(
+            beside(rect(0, 0, 1700, 480), (380, 480), SCREEN, 8),
+            rect(1540, 0, 380, 480)
+        );
     }
 
     #[test]

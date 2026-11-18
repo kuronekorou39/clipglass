@@ -7,12 +7,11 @@ import { PresetTree } from "./PresetTree.jsx";
 import { Icon } from "./Icon.jsx";
 
 /**
- * 下部のボタンから開くプリセットの一覧。外側を押すか Esc で閉じる。
+ * 下部のボタンから、本体の横の別ウィンドウ(Panel.jsx)に開くプリセットの一覧。
  * ✎ や「＋」で、一覧の下に編集画面を出す。一覧は隠さず、編集中の行に印を付ける。
  * `call(command, args, message)` は失敗を通知にして `{ ok, value }` を返す。
  */
 export function PresetPopover({
-  closing,
   presets,
   visiblePresets,
   error,
@@ -22,7 +21,6 @@ export function PresetPopover({
   call,
   onReload,
   onRevealFile,
-  onClose,
 }) {
   const [editing, setEditing] = useState(null);
   // 閉じているフォルダーと、前回のスクロール位置を覚えておく
@@ -104,85 +102,73 @@ export function PresetPopover({
   };
 
   return (
-    <div
-      class={`popover-backdrop${closing ? " closing" : ""}`}
-      inert={closing}
-      onMouseDown={onClose}
-    >
-      <div
-        id="presets"
-        class="popover"
-        role="dialog"
-        aria-label="プリセット"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <input
-          ref={searchRef}
-          class="popover-search"
-          type="search"
-          value={query}
-          placeholder="プリセットを検索"
-          aria-label="プリセットを検索"
-          onInput={(e) => onQueryChange(e.target.value)}
+    <div id="presets" class="popover" role="dialog" aria-label="プリセット">
+      <input
+        ref={searchRef}
+        class="popover-search"
+        type="search"
+        value={query}
+        placeholder="プリセットを検索"
+        aria-label="プリセットを検索"
+        onInput={(e) => onQueryChange(e.target.value)}
+      />
+      <div class="popover-body" ref={bodyRef} onScroll={rememberScroll}>
+        {error && <div class="status-row status-error">{error}</div>}
+        <PresetTree
+          nodes={visiblePresets}
+          editingPath={editing?.node?.path ?? null}
+          collapsed={collapsed}
+          forceOpen={query.trim() !== ""}
+          onToggleFolder={toggleFolder}
+          onSetFolders={setFolders}
+          onCopy={onCopy}
+          onEdit={(node) => setEditing({ node })}
         />
-        <div class="popover-body" ref={bodyRef} onScroll={rememberScroll}>
-          {error && <div class="status-row status-error">{error}</div>}
-          <PresetTree
-            nodes={visiblePresets}
-            editingPath={editing?.node?.path ?? null}
-            collapsed={collapsed}
-            forceOpen={query.trim() !== ""}
-            onToggleFolder={toggleFolder}
-            onSetFolders={setFolders}
-            onCopy={onCopy}
-            onEdit={(node) => setEditing({ node })}
-          />
-          {!error && presets.length === 0 && (
-            <div class="empty-hint">履歴の行の右クリックか「＋ プリセット」で追加できます</div>
-          )}
-          {presets.length > 0 && visiblePresets.length === 0 && (
-            <div class="empty-hint">一致するプリセットがありません</div>
-          )}
-        </div>
-        {editing ? (
-          <PresetEditor
-            key={editing.node?.path.join("/") ?? (editing.isFolder ? "new-folder" : "new")}
-            target={editing}
-            folders={folderPaths(presets)}
-            onSave={save}
-            onRemove={remove}
-            onReorder={reorder}
-            onCancel={() => setEditing(null)}
-          />
-        ) : (
-          <div class="presets-footer">
-            <button
-              class="text-btn with-icon"
-              disabled={Boolean(error)}
-              onClick={() => setEditing({ isFolder: true, folder: [] })}
-            >
-              <Icon name="plus" size={12} />
-              フォルダー
-            </button>
-            <button
-              class="text-btn with-icon"
-              disabled={Boolean(error)}
-              onClick={() => setEditing({ isFolder: false, folder: [] })}
-            >
-              <Icon name="plus" size={12} />
-              プリセット
-            </button>
-            <button
-              class="text-btn with-icon push-right"
-              title="presets.yaml の場所をエクスプローラーで表示"
-              onClick={onRevealFile}
-            >
-              <Icon name="folderOpen" size={12} />
-              場所
-            </button>
-          </div>
+        {!error && presets.length === 0 && (
+          <div class="empty-hint">履歴の行の右クリックか「＋ プリセット」で追加できます</div>
+        )}
+        {presets.length > 0 && visiblePresets.length === 0 && (
+          <div class="empty-hint">一致するプリセットがありません</div>
         )}
       </div>
+      {editing ? (
+        <PresetEditor
+          key={editing.node?.path.join("/") ?? (editing.isFolder ? "new-folder" : "new")}
+          target={editing}
+          folders={folderPaths(presets)}
+          onSave={save}
+          onRemove={remove}
+          onReorder={reorder}
+          onCancel={() => setEditing(null)}
+        />
+      ) : (
+        <div class="presets-footer">
+          <button
+            class="text-btn with-icon"
+            disabled={Boolean(error)}
+            onClick={() => setEditing({ isFolder: true, folder: [] })}
+          >
+            <Icon name="plus" size={12} />
+            フォルダー
+          </button>
+          <button
+            class="text-btn with-icon"
+            disabled={Boolean(error)}
+            onClick={() => setEditing({ isFolder: false, folder: [] })}
+          >
+            <Icon name="plus" size={12} />
+            プリセット
+          </button>
+          <button
+            class="text-btn with-icon push-right"
+            title="presets.yaml の場所をエクスプローラーで表示"
+            onClick={onRevealFile}
+          >
+            <Icon name="folderOpen" size={12} />
+            場所
+          </button>
+        </div>
+      )}
     </div>
   );
 }
