@@ -14,9 +14,12 @@
 
 ## インストール
 
-[GitHub Releases](https://github.com/kuronekorou39/clipglass/releases) から最新の `Clipglass_x.y.z_x64-setup.exe` をダウンロードして実行してください。対応 OS は Windows 11 (x64) です。
+[GitHub Releases](https://github.com/kuronekorou39/clipglass/releases) から最新版をダウンロードしてください。Python やビルド環境は要りません。対応 OS は Windows 11 (x64) です。
 
-インストーラーにはコード署名をしていないため、初回は Windows SmartScreen の警告が出ることがあります。発行元を確認したうえで使う場合は「詳細情報」→「実行」で進めてください。
+- **zip(おすすめ)**: `Clipglass-x.y.z-portable.zip` を展開し、中の `Clipglass.exe` を実行する
+- **インストーラー**: `Clipglass_x.y.z_x64-setup.exe` を実行する
+
+どちらもコード署名をしていないため、初回は Windows SmartScreen の警告が出ることがあります。発行元を確認したうえで使う場合は「詳細情報」→「実行」で進めてください。
 
 ## 主な機能
 
@@ -70,7 +73,7 @@ cd src-tauri && cargo test  # Rust のテスト
 
 1. `package.json` と `src-tauri/Cargo.toml` の `version` を上げる(修正のたびに必ず上げる)
 2. `v` を付けた同じ番号のタグを push する(例: `v0.1.1`)
-3. GitHub Actions がインストーラーをビルドし、ドラフトのリリースに添付する
+3. GitHub Actions が zip とインストーラーをビルドし、ドラフトのリリースに添付する
 
 ## ライセンス
 

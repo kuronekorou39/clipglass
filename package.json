@@ -1,7 +1,7 @@
 {
   "name": "clipglass",
   "private": true,
-  "version": "0.8.4",
+  "version": "0.8.5",
   "description": "Always-visible clipboard viewer for Windows",
   "author": {
     "name": "rou39",

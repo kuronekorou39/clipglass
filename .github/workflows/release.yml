@@ -44,3 +44,17 @@ jobs:
           releaseDraft: true
           generateReleaseNotes: true
           prerelease: false
+
+      # 展開するだけで使える zip も、同じビルドの exe から作って添付する
+      - name: Upload portable zip
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $folder = "Clipglass-$($env:GITHUB_REF_NAME.TrimStart('v'))"
+          New-Item -ItemType Directory $folder | Out-Null
+          Copy-Item src-tauri/target/release/clipglass.exe "$folder/Clipglass.exe"
+          Copy-Item LICENSE, README.md $folder
+          Compress-Archive -Path $folder -DestinationPath "$folder-portable.zip"
+          gh release upload $env:GITHUB_REF_NAME "$folder-portable.zip" --clobber
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
