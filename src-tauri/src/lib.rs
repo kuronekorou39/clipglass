@@ -9,6 +9,7 @@ mod limits;
 mod paste;
 mod placement;
 mod presets;
+mod quickkeys;
 mod save;
 mod store;
 mod watcher;
@@ -16,8 +17,10 @@ mod watcher;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+
+use std::time::Duration;
 
 use tauri::http::{header, Response, StatusCode};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
@@ -28,12 +31,12 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
 use tauri_plugin_dialog::DialogExt;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use tauri_plugin_window_state::StateFlags;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongW, PostMessageW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE,
-    LWA_ALPHA, WS_EX_LAYERED,
+    GetForegroundWindow, GetWindowLongW, PostMessageW, SetLayeredWindowAttributes, SetWindowLongW,
+    GWL_EXSTYLE, LWA_ALPHA, WS_EX_LAYERED,
 };
 
 use archive::Archive;
@@ -47,15 +50,35 @@ const MAIN_WINDOW: &str = "main";
 /// プリセットとお気に入りを出す、本体の横の別ウィンドウ。一覧に重ねないために分けている。
 const PANEL_WINDOW: &str = "panel";
 /// 別ウィンドウに出せる中身。
-const PANEL_KINDS: [&str; 2] = ["presets", "favorites"];
+const PANEL_KINDS: [&str; 3] = ["presets", "favorites", PANEL_SETTINGS];
+/// 設定を出すときの中身の名前。範囲外のクリックで閉じ、マウスを乗せても切り替えない。
+const PANEL_SETTINGS: &str = "settings";
 /// 別ウィンドウの中身が変わったこと(閉じたときは null)をUIへ伝えるイベント。
 const PANEL_EVENT: &str = "panel";
 /// 別ウィンドウの幅と最小の高さ、本体との間(論理ピクセル)。高さは本体に合わせる。
 const PANEL_WIDTH: f64 = 380.0;
 const PANEL_MIN_HEIGHT: f64 = 360.0;
 const PANEL_GAP: f64 = 6.0;
+const SETTINGS_WIDTH: f64 = 460.0;
+const SETTINGS_MIN_HEIGHT: f64 = 640.0;
+/// 別ウィンドウが消えるアニメーションを見せてから隠すまでの長さ。
+const PANEL_FADE: Duration = Duration::from_millis(160);
+/// 隠す予約の番号。消えている途中で開き直したら、古い予約は無効にする。
+static PANEL_HIDE_SERIAL: AtomicU64 = AtomicU64::new(0);
+/// 修飾キー+数字で選ばれた行の位置をUIへ伝えるイベント。
+const QUICK_PICK_EVENT: &str = "quick-pick";
+/// どちらかのウィンドウにマウスが乗っているかをUIへ伝えるイベント。
+const HOVER_EVENT: &str = "window-hover";
+/// 別ウィンドウの設定画面で設定を変えたことを本体へ伝えるイベント。
+const CONFIG_EVENT: &str = "config-changed";
 /// ショートカットで出すときの、カーソルとウィンドウの間隔(論理ピクセル)。
 const CURSOR_GAP: f64 = 8.0;
+/// マウスを乗せて開いた別ウィンドウについて、カーソルの位置を見る間隔。
+const PANEL_HOVER_POLL: Duration = Duration::from_millis(80);
+/// カーソルが本体と別ウィンドウの両方から外れて、これだけ経ったら閉じる。
+const PANEL_HOVER_GRACE: Duration = Duration::from_millis(450);
+/// マウスを乗せて開くたびに進める番号。0 は「マウスで開いていない」に使う。
+static PANEL_HOVER_SERIAL: AtomicU64 = AtomicU64::new(1);
 /// 履歴の画像をUIへ渡すURLスキーム。`/full/<id>` と `/thumb/<id>` を返す。
 const IMAGE_SCHEME: &str = "clipimg";
 /// 履歴の保存やショートカットの登録など、状態行に出さない通知をUIへ送るイベント。
@@ -63,15 +86,6 @@ const NOTICE_EVENT: &str = "notice";
 const HISTORY_DIR: &str = "history";
 /// 画像のURLのうち、保管した項目のサムネイルを指す先頭の区切り(`/archive/<日>/<ハッシュ>`)。
 const ARCHIVE_IMAGE_VARIANT: &str = "archive";
-/// 設定の「情報」から開けるページ。UIからは名前で指定し、任意のURLは開かせない。
-const LINKS: [(&str, &str); 3] = [
-    ("repo", "https://github.com/kuronekorou39/clipglass"),
-    (
-        "releases",
-        "https://github.com/kuronekorou39/clipglass/releases",
-    ),
-    ("site", "https://rou39.com"),
-];
 const TRAY_SHOW: &str = "show";
 const TRAY_QUIT: &str = "quit";
 /// 画面の隅に置くときの、隅からの余白(論理ピクセル)。
@@ -106,6 +120,16 @@ pub struct AppState {
     startup_notices: Mutex<Vec<String>>,
     /// 横の別ウィンドウに出している中身(`PANEL_KINDS` のどれか)。閉じていれば None。
     panel: Mutex<Option<String>>,
+    /// マウスを乗せて開いているときの番号(自動で閉じる見張りの目印)。クリックで開いたなら 0。
+    panel_hover: AtomicU64,
+    /// マウスが乗っているウィンドウの名前。
+    hovered: Mutex<HashSet<String>>,
+    /// どれかのウィンドウが、文字入力のためにフォーカスを取れる状態か。
+    keyboard: AtomicBool,
+    /// 今登録している、修飾キー+数字のショートカット。
+    quick_shortcuts: Mutex<Vec<String>>,
+    /// 設定でショートカットを記録しているあいだは、数字のショートカットも止める。
+    quick_suspended: AtomicBool,
 }
 
 impl AppState {
@@ -275,8 +299,13 @@ fn set_pinned(window: WebviewWindow, state: State<AppState>, pinned: bool) -> Re
 }
 
 #[tauri::command]
-fn show_window(window: WebviewWindow, state: State<AppState>) -> Result<(), String> {
+fn show_window(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<AppState>,
+) -> Result<(), String> {
     window.show().map_err(|e| e.to_string())?;
+    schedule_quick_keys(&app);
     apply_window_alpha(&window, &state)
 }
 
@@ -383,10 +412,17 @@ fn nudge_window(window: WebviewWindow, dx: f64, dy: f64, dw: f64, dh: f64) -> Re
     apply_rect(&window, next)
 }
 
+/// 本体のウィンドウ。設定は別ウィンドウから操作するので、呼び出し元ではなくこちらを動かす。
+fn main_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    app.get_webview_window(MAIN_WINDOW)
+        .ok_or_else(|| "本体のウィンドウが見つかりません".to_string())
+}
+
 /// 大きさを保ったまま、今いるモニターの隅に置く。
 #[tauri::command]
-fn snap_window(window: WebviewWindow, corner: String) -> Result<(), String> {
+fn snap_window(app: AppHandle, corner: String) -> Result<(), String> {
     let corner = Corner::parse(&corner).ok_or("隅の指定が不正です")?;
+    let window = main_window(&app)?;
     let current = placement(&window)?;
     let margin = (SNAP_MARGIN * current.scale).round() as i64;
     let next = placement::snap(
@@ -401,7 +437,8 @@ fn snap_window(window: WebviewWindow, corner: String) -> Result<(), String> {
 
 /// 大きさを初期値に戻す。位置は画面からはみ出さないように直す。
 #[tauri::command]
-fn reset_window_size(window: WebviewWindow) -> Result<(), String> {
+fn reset_window_size(app: AppHandle) -> Result<(), String> {
+    let window = main_window(&app)?;
     let current = placement(&window)?;
     let config = window_config(window.app_handle()).ok_or("ウィンドウの設定が見つかりません")?;
     let resized = Rect {
@@ -417,15 +454,57 @@ fn reset_window_size(window: WebviewWindow) -> Result<(), String> {
 #[tauri::command]
 fn hide_window(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     hide_panel(&app);
-    window.hide().map_err(|e| e.to_string())
+    mark_hovered(&app, MAIN_WINDOW, false);
+    let hidden = window.hide().map_err(|e| e.to_string());
+    schedule_quick_keys(&app);
+    hidden
+}
+
+/// マウスが乗っているウィンドウを記録し、「どちらかに乗っている」が変わったら両方へ伝える。
+/// 本体と別ウィンドウの濃さをそろえるために使う。
+fn mark_hovered(app: &AppHandle, label: &str, hovered: bool) {
+    let state = app.state::<AppState>();
+    let (before, after) = {
+        let mut windows = state.hovered.lock().unwrap();
+        let before = !windows.is_empty();
+        if hovered {
+            windows.insert(label.to_string());
+        } else {
+            windows.remove(label);
+        }
+        (before, !windows.is_empty())
+    };
+    if before != after {
+        let _ = app.emit(HOVER_EVENT, after);
+    }
+}
+
+#[tauri::command]
+fn set_hovered(window: WebviewWindow, hovered: bool) {
+    mark_hovered(window.app_handle(), window.label(), hovered);
+}
+
+#[tauri::command]
+fn get_hovered(state: State<AppState>) -> bool {
+    !state.hovered.lock().unwrap().is_empty()
+}
+
+#[tauri::command]
+fn notify_config_changed(app: AppHandle) {
+    let _ = app.emit(CONFIG_EVENT, ());
 }
 
 /// 本体の配置から、横の別ウィンドウの位置と大きさを求める。
 fn panel_rect(current: &Placement) -> Rect {
+    panel_rect_sized(current, PANEL_WIDTH, PANEL_MIN_HEIGHT)
+}
+
+/// 幅と最低の高さ(論理ピクセル)を決めて、本体の横に置く。高さは本体に合わせる。
+fn panel_rect_sized(current: &Placement, width: f64, min_height: f64) -> Rect {
     let physical = |value: f64| (value * current.scale).round() as i64;
     let size = (
-        physical(PANEL_WIDTH),
-        current.rect.height.max(physical(PANEL_MIN_HEIGHT)),
+        physical(width),
+        current.rect.height.max(physical(min_height)),
     );
     placement::beside(
         current.rect,
@@ -444,7 +523,14 @@ fn place_panel(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     };
     let current = placement(&main)?;
-    apply_rect(&panel, panel_rect(&current))
+    let is_settings =
+        app.state::<AppState>().panel.lock().unwrap().as_deref() == Some(PANEL_SETTINGS);
+    let rect = if is_settings {
+        panel_rect_sized(&current, SETTINGS_WIDTH, SETTINGS_MIN_HEIGHT)
+    } else {
+        panel_rect(&current)
+    };
+    apply_rect(&panel, rect)
 }
 
 /// 横の別ウィンドウ。初めて開くときに作り、閉じても破棄せず隠しておく。
@@ -460,6 +546,7 @@ fn panel_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .skip_taskbar(true)
         .resizable(false)
         .visible(false)
+        .focusable(false)
         .build()
         .map_err(|e| e.to_string())
 }
@@ -474,13 +561,122 @@ fn panel_open(app: &AppHandle) -> bool {
 }
 
 fn hide_panel(app: &AppHandle) {
+    app.state::<AppState>()
+        .panel_hover
+        .store(0, Ordering::Relaxed);
+    mark_hovered(app, PANEL_WINDOW, false);
     if !panel_open(app) {
         return;
     }
-    if let Some(window) = app.get_webview_window(PANEL_WINDOW) {
-        let _ = window.hide();
-    }
     set_panel(app, None);
+    let Some(window) = app.get_webview_window(PANEL_WINDOW) else {
+        return;
+    };
+    // 設定で受け取っていたキーボードは、元のアプリへ返す
+    if is_foreground(&window) {
+        paste::focus_last_window();
+    }
+    // 中身がふわっと消えるのを待ってから隠す
+    let serial = PANEL_HIDE_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(PANEL_FADE);
+        let main = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            if PANEL_HIDE_SERIAL.load(Ordering::Relaxed) == serial && !panel_open(&main) {
+                let _ = window.hide();
+            }
+        });
+    });
+}
+
+/// 修飾キー+数字のショートカットを、今の状態に合わせて登録し直す。ほかのアプリの同じ操作を
+/// 奪わないよう、ウィンドウが出ているあいだだけ登録する。登録できなかった数を返す。
+fn sync_quick_keys(app: &AppHandle) -> usize {
+    let state = app.state::<AppState>();
+    let shortcuts = app.global_shortcut();
+    for text in std::mem::take(&mut *state.quick_shortcuts.lock().unwrap()) {
+        let _ = shortcuts.unregister(text.as_str());
+    }
+    let visible = app
+        .get_webview_window(MAIN_WINDOW)
+        .is_some_and(|window| window.is_visible().unwrap_or(false));
+    if !visible || state.quick_suspended.load(Ordering::Relaxed) {
+        return 0;
+    }
+    let (mode, hotkey) = {
+        let config = state.config.lock().unwrap();
+        (config.quick_keys.clone(), config.hotkey.clone())
+    };
+    // 出す/隠すショートカットと同じ組み合わせは、そちらを優先する
+    let main_id = hotkey
+        .parse::<Shortcut>()
+        .ok()
+        .map(|shortcut| shortcut.id());
+    let mut failed = 0;
+    for (text, index) in quickkeys::shortcuts(&mode) {
+        if text.parse::<Shortcut>().ok().map(|shortcut| shortcut.id()) == main_id {
+            continue;
+        }
+        let registered = shortcuts.on_shortcut(text.as_str(), move |app, _, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = app.emit(QUICK_PICK_EVENT, index);
+            }
+        });
+        match registered {
+            Ok(()) => state.quick_shortcuts.lock().unwrap().push(text),
+            Err(_) => failed += 1,
+        }
+    }
+    failed
+}
+
+/// 今の処理が終わってから、数字のショートカットを登録し直す。ショートカットの処理の中からも呼ぶ。
+fn schedule_quick_keys(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        sync_quick_keys(&handle);
+    });
+}
+
+/// 一覧を数字で選ぶ組み合わせを変える。
+#[tauri::command]
+fn set_quick_keys(app: AppHandle, state: State<AppState>, mode: String) -> Result<(), String> {
+    if !quickkeys::is_mode(&mode) {
+        return Err(format!("選べない組み合わせです: {mode}"));
+    }
+    update_config(&state, |config| config.quick_keys = mode)?;
+    match sync_quick_keys(&app) {
+        0 => Ok(()),
+        _ => Err("一部の数字は、ほかのアプリが使っているため登録できませんでした".to_string()),
+    }
+}
+
+fn is_foreground(window: &WebviewWindow) -> bool {
+    window
+        .hwnd()
+        .is_ok_and(|hwnd| unsafe { GetForegroundWindow() } == hwnd)
+}
+
+/// ほかのアプリが前面になった。クリックでまたフォーカスを奪わないように戻し、設定は閉じる
+/// (範囲外のクリックで閉じる)。フォーカスの通知は WebView の中へ移るだけでも届くので使わない。
+pub fn foreground_left_app(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let state = handle.state::<AppState>();
+        if state.keyboard.swap(false, Ordering::Relaxed) {
+            for label in [MAIN_WINDOW, PANEL_WINDOW] {
+                if let Some(window) = handle.get_webview_window(label) {
+                    let _ = window.set_focusable(false);
+                    let _ = restore_window_style(&window, &state);
+                }
+            }
+        }
+        let is_settings = state.panel.lock().unwrap().as_deref() == Some(PANEL_SETTINGS);
+        if is_settings {
+            hide_panel(&handle);
+        }
+    });
 }
 
 /// 横の別ウィンドウで `kind` を開く。同じものが開いていれば閉じる。
@@ -490,16 +686,116 @@ async fn toggle_panel(app: AppHandle, kind: String) -> Result<(), String> {
     if !PANEL_KINDS.contains(&kind.as_str()) {
         return Err(format!("開けない中身です: {kind}"));
     }
-    let open = app.state::<AppState>().panel.lock().unwrap().clone();
+    let state = app.state::<AppState>();
+    let open = state.panel.lock().unwrap().clone();
     if open.as_deref() == Some(kind.as_str()) {
-        hide_panel(&app);
+        // マウスを乗せて開いていたなら、クリックで開いたままにする
+        if state.panel_hover.swap(0, Ordering::Relaxed) == 0 {
+            hide_panel(&app);
+        }
         return Ok(());
     }
-    let panel = panel_window(&app)?;
-    set_panel(&app, Some(kind));
-    place_panel(&app)?;
-    panel.show().map_err(|e| e.to_string())?;
-    panel.set_focus().map_err(|e| e.to_string())
+    state.panel_hover.store(0, Ordering::Relaxed);
+    let is_settings = kind == PANEL_SETTINGS;
+    show_panel(&app, kind)?;
+    if is_settings {
+        take_focus(&panel_window(&app)?, &state)?;
+    }
+    Ok(())
+}
+
+/// 中身を切り替えて、フォーカスを取らずに本体の横へ出す。
+fn show_panel(app: &AppHandle, kind: String) -> Result<(), String> {
+    PANEL_HIDE_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let panel = panel_window(app)?;
+    set_panel(app, Some(kind));
+    place_panel(app)?;
+    panel.show().map_err(|e| e.to_string())
+}
+
+/// ボタンにマウスを乗せたときに開く。カーソルが本体と別ウィンドウから外れたら自動で閉じる。
+/// クリックで開いたままにしているときは、中身だけを切り替えて自動では閉じない。
+#[tauri::command]
+async fn hover_panel(app: AppHandle, kind: String) -> Result<(), String> {
+    if !PANEL_KINDS.contains(&kind.as_str()) {
+        return Err(format!("開けない中身です: {kind}"));
+    }
+    let state = app.state::<AppState>();
+    let open = state.panel.lock().unwrap().clone();
+    if open.as_deref() == Some(kind.as_str()) || open.as_deref() == Some(PANEL_SETTINGS) {
+        return Ok(());
+    }
+    let watching = state.panel_hover.load(Ordering::Relaxed) != 0;
+    let kept_open = open.is_some() && !watching;
+    show_panel(&app, kind)?;
+    if !kept_open && !watching {
+        let id = PANEL_HOVER_SERIAL.fetch_add(1, Ordering::Relaxed);
+        state.panel_hover.store(id, Ordering::Relaxed);
+        watch_panel_hover(app.clone(), id);
+    }
+    Ok(())
+}
+
+/// カーソルが、見えている本体か別ウィンドウの上にあるか。分からないときは上にあるとみなす。
+fn cursor_over_windows(app: &AppHandle) -> bool {
+    let Ok(cursor) = app.cursor_position() else {
+        return true;
+    };
+    let cursor = (cursor.x.round() as i64, cursor.y.round() as i64);
+    [MAIN_WINDOW, PANEL_WINDOW].iter().any(|label| {
+        let Some(window) = app.get_webview_window(label) else {
+            return false;
+        };
+        let (Ok(true), Ok(position), Ok(size)) = (
+            window.is_visible(),
+            window.outer_position(),
+            window.outer_size(),
+        ) else {
+            return false;
+        };
+        Rect {
+            x: position.x.into(),
+            y: position.y.into(),
+            width: size.width.into(),
+            height: size.height.into(),
+        }
+        .contains(cursor)
+    })
+}
+
+/// マウスを乗せて開いた別ウィンドウを見張り、カーソルが離れたら閉じる。文字を入力中は閉じない。
+fn watch_panel_hover(app: AppHandle, id: u64) {
+    std::thread::spawn(move || {
+        let mut away = Duration::ZERO;
+        loop {
+            std::thread::sleep(PANEL_HOVER_POLL);
+            let state = app.state::<AppState>();
+            if state.panel_hover.load(Ordering::Relaxed) != id {
+                return;
+            }
+            let typing = app
+                .get_webview_window(PANEL_WINDOW)
+                .is_some_and(|panel| is_foreground(&panel));
+            away = if typing || cursor_over_windows(&app) {
+                Duration::ZERO
+            } else {
+                away + PANEL_HOVER_POLL
+            };
+            if away >= PANEL_HOVER_GRACE {
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    let still = handle
+                        .state::<AppState>()
+                        .panel_hover
+                        .load(Ordering::Relaxed);
+                    if still == id {
+                        hide_panel(&handle);
+                    }
+                });
+                return;
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -518,9 +814,52 @@ fn show_main_window(app: &AppHandle) {
         return;
     };
     let _ = window.unminimize();
+    // 入力中のアプリのフォーカスは奪わない
     let _ = window.show();
-    let _ = window.set_focus();
     let _ = apply_window_alpha(&window, &app.state::<AppState>());
+    schedule_quick_keys(app);
+}
+
+/// クリックではフォーカスを取らないウィンドウに、キーボードを受け取らせる。
+fn take_focus(window: &WebviewWindow, state: &AppState) -> Result<(), String> {
+    // もう片方のウィンドウは、クリックしてもフォーカスを取らないままにする
+    let other = if window.label() == MAIN_WINDOW {
+        PANEL_WINDOW
+    } else {
+        MAIN_WINDOW
+    };
+    if let Some(other) = window.app_handle().get_webview_window(other) {
+        if !is_foreground(&other) {
+            let _ = other.set_focusable(false);
+            let _ = restore_window_style(&other, state);
+        }
+    }
+    state.keyboard.store(true, Ordering::Relaxed);
+    window.set_focusable(true).map_err(|e| e.to_string())?;
+    restore_window_style(window, state)?;
+    window.set_focus().map_err(|e| e.to_string())
+}
+
+/// フォーカスの可否を変えると拡張スタイルが作り直されるので、本体の透過を付け直す。
+fn restore_window_style(window: &WebviewWindow, state: &AppState) -> Result<(), String> {
+    if window.label() == MAIN_WINDOW {
+        apply_window_alpha(window, state)?;
+    }
+    Ok(())
+}
+
+/// 文字を打つ場面で、キーボードを受け取る。
+#[tauri::command]
+fn take_keyboard(window: WebviewWindow, state: State<AppState>) -> Result<(), String> {
+    take_focus(&window, &state)
+}
+
+/// 文字を打ち終えたら、直前に使っていたアプリへキーボードを返す。
+#[tauri::command]
+fn release_keyboard(window: WebviewWindow) {
+    if is_foreground(&window) {
+        paste::focus_last_window();
+    }
 }
 
 /// カーソルのあるモニターの、カーソルのそばへ動かす。モニターごとの拡大率の違いは大きさに反映する。
@@ -579,7 +918,9 @@ fn toggle_main_window(app: &AppHandle) {
     let shown = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     if shown {
         hide_panel(app);
+        mark_hovered(app, MAIN_WINDOW, false);
         let _ = window.hide();
+        schedule_quick_keys(app);
     } else {
         // 位置を決められなくても、前回の場所に出せばよい
         let _ = move_near_cursor(app, &window);
@@ -591,6 +932,12 @@ fn toggle_main_window(app: &AppHandle) {
 fn register_hotkey(app: &AppHandle, hotkey: &str) -> Result<(), String> {
     let shortcuts = app.global_shortcut();
     shortcuts.unregister_all().map_err(|e| e.to_string())?;
+    // 数字のショートカットも一緒に外れたので、呼び出し側が `sync_quick_keys` で戻す
+    app.state::<AppState>()
+        .quick_shortcuts
+        .lock()
+        .unwrap()
+        .clear();
     let hotkey = hotkey.trim();
     if hotkey.is_empty() {
         return Ok(());
@@ -618,6 +965,7 @@ struct ConfigView {
     archive_bytes: u64,
     version: &'static str,
     hotkey: String,
+    quick_keys: String,
     autostart: bool,
     data_dir: String,
     /// 起動時に起きた問題。UIはこれを通知として表示する。
@@ -637,6 +985,7 @@ fn get_config(app: AppHandle, state: State<AppState>) -> ConfigView {
         archive_bytes: state.paths().archive.size(),
         version: env!("CARGO_PKG_VERSION"),
         hotkey: config.hotkey,
+        quick_keys: config.quick_keys,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         data_dir: state.paths().data_dir.to_string_lossy().into_owned(),
         notices: std::mem::take(&mut state.startup_notices.lock().unwrap()),
@@ -737,28 +1086,35 @@ fn remove_archived(state: State<AppState>, key: String) -> Result<(), String> {
 #[tauri::command]
 fn set_hotkey(app: AppHandle, state: State<AppState>, hotkey: String) -> Result<(), String> {
     let hotkey = hotkey.trim().to_string();
+    state.quick_suspended.store(false, Ordering::Relaxed);
     if let Err(message) = register_hotkey(&app, &hotkey) {
         // 失敗したら元のショートカットに戻す。
         let previous = state.config.lock().unwrap().hotkey.clone();
         let _ = register_hotkey(&app, &previous);
+        sync_quick_keys(&app);
         return Err(message);
     }
-    update_config(&state, |config| config.hotkey = hotkey)?;
-    Ok(())
+    let saved = update_config(&state, |config| config.hotkey = hotkey);
+    sync_quick_keys(&app);
+    saved.map(|_| ())
 }
 
 /// 設定でショートカットを記録するあいだ、今のショートカットを止める。
 /// 止めないと、今と同じキーを押したときにウィンドウが隠れてしまう。
 #[tauri::command]
 fn suspend_hotkey(app: AppHandle, state: State<AppState>, suspended: bool) -> Result<(), String> {
+    state.quick_suspended.store(suspended, Ordering::Relaxed);
     if suspended {
+        state.quick_shortcuts.lock().unwrap().clear();
         return app
             .global_shortcut()
             .unregister_all()
             .map_err(|e| e.to_string());
     }
     let hotkey = state.config.lock().unwrap().hotkey.clone();
-    register_hotkey(&app, &hotkey)
+    let registered = register_hotkey(&app, &hotkey);
+    sync_quick_keys(&app);
+    registered
 }
 
 #[tauri::command]
@@ -983,21 +1339,6 @@ fn reveal_presets_file(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 fn open_data_dir(state: State<AppState>) -> Result<(), String> {
     tauri_plugin_opener::open_path(&state.paths().data_dir, None::<&str>).map_err(|e| e.to_string())
-}
-
-/// UIが名前で指定したページのURL。一覧にない名前は開かせない。
-fn link_url(target: &str) -> Option<&'static str> {
-    LINKS
-        .iter()
-        .find(|(name, _)| *name == target)
-        .map(|(_, url)| *url)
-}
-
-/// 設定の「情報」にあるページを、既定のブラウザーで開く。
-#[tauri::command]
-fn open_link(target: String) -> Result<(), String> {
-    let url = link_url(&target).ok_or("開く先が不正です")?;
-    tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[derive(serde::Serialize)]
@@ -1236,6 +1577,11 @@ pub fn run() {
             paths: OnceLock::new(),
             startup_notices: Mutex::new(Vec::new()),
             panel: Mutex::new(None),
+            panel_hover: AtomicU64::new(0),
+            hovered: Mutex::new(HashSet::new()),
+            keyboard: AtomicBool::new(false),
+            quick_shortcuts: Mutex::new(Vec::new()),
+            quick_suspended: AtomicBool::new(false),
         })
         .register_uri_scheme_protocol(IMAGE_SCHEME, |context, request| {
             let state = context.app_handle().state::<AppState>();
@@ -1274,6 +1620,7 @@ pub fn run() {
             restore_archived,
             remove_archived,
             set_hotkey,
+            set_quick_keys,
             suspend_hotkey,
             set_autostart,
             get_presets,
@@ -1293,8 +1640,13 @@ pub fn run() {
             remove_preset,
             reveal_presets_file,
             open_data_dir,
-            open_link,
             toggle_panel,
+            hover_panel,
+            set_hovered,
+            get_hovered,
+            notify_config_changed,
+            take_keyboard,
+            release_keyboard,
             close_panel,
             get_panel,
         ])
@@ -1305,6 +1657,8 @@ pub fn run() {
                 api.prevent_close();
                 let _ = window.hide();
                 hide_panel(window.app_handle());
+                mark_hovered(window.app_handle(), window.label(), false);
+                schedule_quick_keys(window.app_handle());
             }
             WindowEvent::Moved(_) | WindowEvent::Resized(_)
                 if window.label() == MAIN_WINDOW
@@ -1362,6 +1716,11 @@ mod tests {
             paths: OnceLock::new(),
             startup_notices: Mutex::new(Vec::new()),
             panel: Mutex::new(None),
+            panel_hover: AtomicU64::new(0),
+            hovered: Mutex::new(HashSet::new()),
+            keyboard: AtomicBool::new(false),
+            quick_shortcuts: Mutex::new(Vec::new()),
+            quick_suspended: AtomicBool::new(false),
         }
     }
 
@@ -1549,17 +1908,6 @@ mod tests {
         assert_eq!(opacity_to_alpha(0.0), minimum);
         assert_eq!(opacity_to_alpha(-1.0), minimum);
         assert_eq!(opacity_to_alpha(0.5), 127);
-    }
-
-    #[test]
-    fn only_listed_links_can_be_opened() {
-        for (name, url) in LINKS {
-            assert_eq!(link_url(name), Some(url));
-            assert!(url.starts_with("https://"), "{url}");
-        }
-        assert_eq!(link_url(""), None);
-        assert_eq!(link_url("REPO"), None);
-        assert_eq!(link_url("https://example.com"), None);
     }
 
     #[test]
@@ -1782,10 +2130,9 @@ mod tests {
     }
 
     #[test]
-    fn panel_kinds_and_links_have_unique_names() {
-        assert_ne!(PANEL_KINDS[0], PANEL_KINDS[1]);
-        for (i, (name, _)) in LINKS.iter().enumerate() {
-            assert!(!LINKS[..i].iter().any(|(other, _)| other == name));
+    fn panel_kinds_have_unique_names() {
+        for (i, name) in PANEL_KINDS.iter().enumerate() {
+            assert!(!PANEL_KINDS[..i].contains(name));
         }
     }
 }

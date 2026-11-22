@@ -102,8 +102,47 @@ afterEach(() => {
 });
 
 describe("PresetPopover: 一覧", () => {
-  it("開いたら検索欄に入力でき、打った語を渡す", async () => {
+  it("検索欄はふだん出さず、フォーカスも取らない", async () => {
     await mount();
+    expect($('[aria-label="プリセットを検索"]')).toBeNull();
+    expect(root.contains(document.activeElement)).toBe(false);
+  });
+
+  it("検索欄は一覧の下、ボタンの近くに出す", async () => {
+    await mount();
+    await click($('.presets-footer [aria-label="検索"]'));
+    const order = [...$("#presets").children].map((el) => el.className);
+    expect(order.indexOf("popover-search")).toBeGreaterThan(order.indexOf("popover-body"));
+    expect(order.indexOf("popover-search")).toBeLessThan(order.indexOf("presets-footer"));
+  });
+
+  it("閉じたフォルダーはマウスを少し留めると開き、通り過ぎただけでは開かない", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(VIEW_KEY, JSON.stringify({ collapsed: [pathKey(WORK)], scroll: 0 }));
+    await mount();
+    const summary = folder("仕事").querySelector(":scope > summary");
+    expect(folder("仕事").open).toBe(false);
+    await act(async () => summary.dispatchEvent(new MouseEvent("mouseenter")));
+    await act(async () => summary.dispatchEvent(new MouseEvent("mouseleave")));
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(folder("仕事").open).toBe(false);
+    await act(async () => summary.dispatchEvent(new MouseEvent("mouseenter")));
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(folder("仕事").open).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("検索を閉じると、検索語を消す", async () => {
+    await mount();
+    await click($('.presets-footer [aria-label="検索"]'));
+    await click($('.presets-footer [aria-label="検索"]'));
+    expect($('[aria-label="プリセットを検索"]')).toBeNull();
+    expect(handlers.onQueryChange).toHaveBeenLastCalledWith("");
+  });
+
+  it("検索ボタンで開くと入力でき、打った語を渡す", async () => {
+    await mount();
+    await click($('.presets-footer [aria-label="検索"]'));
     const search = $('[aria-label="プリセットを検索"]');
     expect(document.activeElement).toBe(search);
     await type(search, "お礼");
@@ -221,8 +260,8 @@ describe("PresetPopover: 編集", () => {
     expect(editor()).toBeNull();
     expect(call).not.toHaveBeenCalled();
     expect(handlers.onReload).not.toHaveBeenCalled();
-    // 検索欄へ戻す
-    expect(document.activeElement).toBe($('[aria-label="プリセットを検索"]'));
+    // 検索欄は開いていなかったので、出さない
+    expect($('[aria-label="プリセットを検索"]')).toBeNull();
   });
 
   it("上へ・下へで並びを変え、編集は開いたままにする", async () => {

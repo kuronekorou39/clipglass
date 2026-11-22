@@ -1,3 +1,4 @@
+import { useState } from "preact/hooks";
 import { fileName, formatTime, imageUrl, richFormatLabels } from "../format.js";
 import { ROW_ATTR } from "../listMotion.js";
 import { RichBadge } from "./FormatBadges.jsx";
@@ -43,26 +44,38 @@ function detail(item) {
  * 行のクリック(再コピー)にならないよう、開閉のクリックは行へ伝えない。
  */
 function ItemData({ item, richFormats }) {
+  const [open, setOpen] = useState(false);
   return (
-    <details class="item-data" onClick={(e) => e.stopPropagation()}>
-      <summary>データ</summary>
-      <dl>
-        <dt>内容</dt>
-        <dd>{detail(item)}</dd>
-        <dt>時刻</dt>
-        <dd>{formatTime(item.updatedAt)}</dd>
-        {richFormats.length > 0 && (
-          <>
-            <dt>書式</dt>
-            <dd>
-              <RichBadge formats={richFormats} />
-            </dd>
-          </>
-        )}
-        <dt>形式</dt>
-        <dd class="format-names">{item.formats.join("\n") || "なし"}</dd>
-      </dl>
-    </details>
+    <>
+      <button
+        class="item-data-toggle"
+        aria-expanded={open}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen(!open);
+        }}
+      >
+        データ
+      </button>
+      {open && (
+        <dl class="item-data-list" onClick={(e) => e.stopPropagation()}>
+          <dt>内容</dt>
+          <dd>{detail(item)}</dd>
+          <dt>時刻</dt>
+          <dd>{formatTime(item.updatedAt)}</dd>
+          {richFormats.length > 0 && (
+            <>
+              <dt>書式</dt>
+              <dd>
+                <RichBadge formats={richFormats} />
+              </dd>
+            </>
+          )}
+          <dt>形式</dt>
+          <dd class="format-names">{item.formats.join("\n") || "なし"}</dd>
+        </dl>
+      )}
+    </>
   );
 }
 
@@ -81,19 +94,20 @@ export function FileNames({ paths, limit }) {
 }
 
 /** 行の頭に置く、数字キーの印。先頭から9件だけに付け、ほかの行は同じ幅だけ空けて頭をそろえる。 */
-function QuickKey({ number }) {
+function QuickKey({ number, prefix }) {
   return (
     <span class="item-key" aria-hidden={number ? undefined : true}>
-      {number && <kbd title={`${number} キーで選ぶ`}>{number}</kbd>}
+      {number && <kbd title={`${prefix ?? ""}${number} で貼り付け`}>{number}</kbd>}
     </span>
   );
 }
 
 /**
  * お気に入り・プリセットへの追加・削除は行に出さず、右クリックのメニューから行う。
- * お気に入りに入っている文字の行には星を出す。`quickKey` は数字キーで選ぶときの番号(1〜9)。
+ * お気に入りに入っている文字の行には星を出す。`quickKey` は修飾キー+数字で選ぶときの番号(1〜9)、`quickPrefix` はその修飾キーの表記。
+ * `onPick` は先頭行を選んだとき(今の書式のまま貼り付ける)。
  */
-export function HistoryItem({ item, current, quickKey, wrap, saving, onCopy, onSave, onMenu }) {
+export function HistoryItem({ item, current, quickKey, quickPrefix, wrap, saving, onCopy, onPick, onSave, onMenu }) {
   const isImage = item.kind === "image";
   const hasStoredRich = item.storedRich.length > 0;
   // 先頭行は今のクリップボードの中身を、それ以外は選び直したときに入る中身を示す。
@@ -113,7 +127,6 @@ export function HistoryItem({ item, current, quickKey, wrap, saving, onCopy, onS
           <Icon name="star" size={12} />
         </span>
       )}
-      <ItemData item={item} richFormats={richFormats} />
       <span class="item-tools">
         {current && isImage && <SaveButton disabled={saving} onSave={onSave} />}
         {current && hasStoredRich && clipboardIsRich && (
@@ -127,13 +140,30 @@ export function HistoryItem({ item, current, quickKey, wrap, saving, onCopy, onS
           </RowButton>
         )}
       </span>
+      <ItemData item={item} richFormats={richFormats} />
     </div>
   );
+  const pickByKey = (pick) => (e) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      pick();
+    }
+  };
 
   if (current) {
     return (
-      <div class={classes} {...row} onContextMenu={onContextMenu}>
-        <QuickKey number={quickKey} />
+      <div
+        class={classes}
+        {...row}
+        role="button"
+        tabIndex={0}
+        title="クリックで貼り付け(右クリックでメニュー)"
+        onClick={onPick}
+        onContextMenu={onContextMenu}
+        onKeyDown={pickByKey(onPick)}
+      >
+        <QuickKey number={quickKey} prefix={quickPrefix} />
         <div class="item-main">
           {isImage && (
             <div class="preview-image">
@@ -159,15 +189,9 @@ export function HistoryItem({ item, current, quickKey, wrap, saving, onCopy, onS
       title={hasStoredRich ? "クリックで書式ごとコピー(右クリックでメニュー)" : "クリックでコピー(右クリックでメニュー)"}
       onClick={() => onCopy(false)}
       onContextMenu={onContextMenu}
-      onKeyDown={(e) => {
-        if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onCopy(false);
-        }
-      }}
+      onKeyDown={pickByKey(() => onCopy(false))}
     >
-      <QuickKey number={quickKey} />
+      <QuickKey number={quickKey} prefix={quickPrefix} />
       <div class="item-main">
         <div class="item-body">
           {isImage && (

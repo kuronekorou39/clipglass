@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "clipglass"
-version = "0.8.5"
+version = "0.8.9"
 dependencies = [
  "base64 0.22.1",
  "chrono",

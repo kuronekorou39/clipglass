@@ -23,11 +23,10 @@ const CONFIG = {
 let root;
 let handlers;
 
-async function mount({ config = {}, settings = {}, closing = false } = {}) {
+async function mount({ config = {}, settings = {} } = {}) {
   await act(async () =>
     render(
       <SettingsPanel
-        closing={closing}
         config={{ ...CONFIG, ...config }}
         settings={{ ...DEFAULT_SETTINGS, ...settings }}
         {...handlers}
@@ -72,7 +71,6 @@ beforeEach(() => {
     onApply: vi.fn(),
     onSuspendHotkey: vi.fn(),
     onOpenDataDir: vi.fn(),
-    onOpenLink: vi.fn(),
     onSnap: vi.fn(),
     onResetSize: vi.fn(),
   };
@@ -86,20 +84,12 @@ afterEach(() => {
 });
 
 describe("SettingsPanel", () => {
-  it("外側か ✕ を押すと閉じ、パネルの中を押しても閉じない", async () => {
+  it("✕ を押すと閉じ、パネルの中を押しても閉じない", async () => {
     await mount();
     await click($('[role="dialog"]'));
     expect(handlers.onClose).not.toHaveBeenCalled();
-    await click($(".overlay"));
-    expect(handlers.onClose).toHaveBeenCalledTimes(1);
     await click($('[aria-label="閉じる"]'));
-    expect(handlers.onClose).toHaveBeenCalledTimes(2);
-  });
-
-  it("閉じる途中は操作を受け付けない", async () => {
-    await mount({ closing: true });
-    expect($(".overlay").classList.contains("closing")).toBe(true);
-    expect($(".overlay").hasAttribute("inert")).toBe(true);
+    expect(handlers.onClose).toHaveBeenCalledTimes(1);
   });
 
   it("選んでいるタブに印が付き、中身が切り替わる", async () => {
@@ -334,13 +324,6 @@ describe("SettingsPanel", () => {
       await openTab("ウィンドウ");
       await click(button("標準の大きさに戻す"));
       expect(handlers.onResetSize).toHaveBeenCalledTimes(1);
-    });
-
-    it("「情報」のリンクは、それぞれの行き先を開く", async () => {
-      await mount();
-      await openTab("情報");
-      for (const label of ["GitHub", "更新を確認", "作者のサイト"]) await click(button(label));
-      expect(handlers.onOpenLink.mock.calls.map(([target]) => target)).toEqual(["repo", "releases", "site"]);
     });
   });
 });

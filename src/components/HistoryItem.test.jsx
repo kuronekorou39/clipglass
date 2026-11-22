@@ -47,7 +47,12 @@ async function mount(item, props = {}) {
 }
 
 const button = (label) => [...root.querySelectorAll("button")].find((b) => b.textContent.includes(label));
-const dataText = () => root.querySelector("details.item-data").textContent;
+/** 「データ」を開いて中身の文字を返す。 */
+async function dataText() {
+  const toggle = root.querySelector(".item-data-toggle");
+  if (toggle.getAttribute("aria-expanded") !== "true") await act(async () => toggle.click());
+  return root.querySelector(".item-data-list").textContent;
+}
 
 beforeEach(() => {
   onCopy = vi.fn();
@@ -138,7 +143,7 @@ describe("HistoryItem", () => {
     expect(row.querySelector("img").getAttribute("src")).toBe("http://clipimg.localhost/full/7");
     button("画像を保存").click();
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(dataText()).toContain("640 × 480 px");
+    expect(await dataText()).toContain("640 × 480 px");
     await mount({ kind: "image", text: null, width: 640, height: 480 }, { current: true, saving: true });
     expect(button("画像を保存").disabled).toBe(true);
   });
@@ -161,7 +166,7 @@ describe("HistoryItem", () => {
     expect(names).toEqual(["a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "ほか 2件"]);
     // 全体のパスはツールチップで読める
     expect(row.querySelector(".file-names li").title).toBe("C:\\work\\a.txt");
-    expect(dataText()).toContain("ファイル 7件");
+    expect(await dataText()).toContain("ファイル 7件");
   });
 
   it("過去のファイルの行は1件だけ名前を出す。1件なら「ほか」は出さない", async () => {
@@ -173,18 +178,20 @@ describe("HistoryItem", () => {
 
   it("「データ」に文字数と時刻を出し、一部だけのときはそう書く", async () => {
     await mount({ truncated: true });
-    expect(dataText()).toContain(`${(1234).toLocaleString()}文字(一部のみ表示)`);
-    expect(dataText()).toContain("08:05:03");
-    expect(dataText()).toContain("CF_UNICODETEXT");
+    expect(await dataText()).toContain(`${(1234).toLocaleString()}文字(一部のみ表示)`);
+    expect(await dataText()).toContain("08:05:03");
+    expect(await dataText()).toContain("CF_UNICODETEXT");
   });
 
   it("形式の情報がなければ「なし」と出す", async () => {
     await mount({ formats: [] });
+    await dataText();
     expect(root.querySelector(".format-names").textContent).toBe("なし");
   });
 
   it("書式の印は、今の行は今の形式、過去の行は選び直したときに入る形式で決める", async () => {
     await mount({ formats: ["CF_UNICODETEXT"], storedRich: ["HTML Format"] });
+    await dataText();
     expect(root.querySelector(".badge-rich").textContent).toBe("書式付き HTML");
     // 文字だけにしたあとの今の行には、書式の印を出さない
     await mount({ formats: ["CF_UNICODETEXT"], storedRich: ["HTML Format"] }, { current: true });
@@ -195,11 +202,12 @@ describe("HistoryItem", () => {
 
   it("書式の項目は、書式を表す形式がないときは見出しごと出さない", async () => {
     await mount({ storedRich: ["CF_TEXT"] });
-    const headings = [...root.querySelectorAll(".item-data dt")].map((dt) => dt.textContent);
+    await dataText();
+    const headings = [...root.querySelectorAll(".item-data-list dt")].map((dt) => dt.textContent);
     expect(headings).toContain("書式");
     expect(root.querySelector(".badge-rich")).toBeNull();
     await mount({ storedRich: [] });
-    expect([...root.querySelectorAll(".item-data dt")].map((dt) => dt.textContent)).not.toContain("書式");
+    expect([...root.querySelectorAll(".item-data-list dt")].map((dt) => dt.textContent)).not.toContain("書式");
   });
 
   it("数字キーの印は番号があるときだけ出し、なければ幅だけ空ける", async () => {

@@ -1,19 +1,30 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { firstLine } from "../search.js";
+import { useKeyboard } from "../keyboardFocus.js";
 import { Icon } from "./Icon.jsx";
 
 /**
  * 下部のボタンから、本体の横の別ウィンドウ(Panel.jsx)に開くお気に入りの一覧。
  * プリセットと違ってフォルダーも名前もなく、文字を新しい順に並べるだけ。クリックでコピーする。
+ * 検索と追加の入力欄はふだん隠し、開いたときだけキーボードを受け取る。
  */
 export function FavoritesPopover({ favorites, onCopy, onRemove, onAdd }) {
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState("");
-  const searchRef = useRef(null);
+  // 開いている入力欄。"search" か "add"、なければ null
+  const [field, setField] = useState(null);
+  const fieldRef = useRef(null);
+  useKeyboard(field !== null);
 
   useEffect(() => {
-    searchRef.current?.focus();
-  }, []);
+    fieldRef.current?.focus();
+  }, [field]);
+
+  const toggleField = (name) => {
+    setQuery("");
+    setDraft("");
+    setField(field === name ? null : name);
+  };
 
   const needle = query.trim().toLowerCase();
   const visible = needle ? favorites.filter((text) => text.toLowerCase().includes(needle)) : favorites;
@@ -21,20 +32,14 @@ export function FavoritesPopover({ favorites, onCopy, onRemove, onAdd }) {
   const submit = async (e) => {
     e.preventDefault();
     if (draft.trim() === "") return;
-    if (await onAdd(draft)) setDraft("");
+    if (await onAdd(draft)) {
+      setDraft("");
+      setField(null);
+    }
   };
 
   return (
     <div id="favorites" class="popover" role="dialog" aria-label="お気に入り">
-      <input
-        ref={searchRef}
-        class="popover-search"
-        type="search"
-        value={query}
-        placeholder="お気に入りを検索"
-        aria-label="お気に入りを検索"
-        onInput={(e) => setQuery(e.target.value)}
-      />
       <div class="popover-body">
         <div class="preset-tree">
           {visible.map((text) => (
@@ -78,19 +83,52 @@ export function FavoritesPopover({ favorites, onCopy, onRemove, onAdd }) {
           <div class="empty-hint">一致するお気に入りがありません</div>
         )}
       </div>
-      <form class="favorite-add" onSubmit={submit}>
+      {field === "search" && (
         <input
-          type="text"
-          value={draft}
-          placeholder="文字を入力して追加"
-          aria-label="追加する文字"
-          onInput={(e) => setDraft(e.target.value)}
+          ref={fieldRef}
+          class="popover-search"
+          type="search"
+          value={query}
+          placeholder="お気に入りを検索"
+          aria-label="お気に入りを検索"
+          onInput={(e) => setQuery(e.target.value)}
         />
-        <button class="row-btn with-icon" type="submit" disabled={draft.trim() === ""}>
-          <Icon name="plus" size={12} />
-          追加
+      )}
+      {field === "add" && (
+        <form class="favorite-add" onSubmit={submit}>
+          <input
+            ref={fieldRef}
+            type="text"
+            value={draft}
+            placeholder="文字を入力して追加"
+            aria-label="追加する文字"
+            onInput={(e) => setDraft(e.target.value)}
+          />
+          <button class="row-btn with-icon" type="submit" disabled={draft.trim() === ""}>
+            <Icon name="plus" size={12} />
+            追加
+          </button>
+        </form>
+      )}
+      <div class="presets-footer">
+        <button
+          class="icon-btn"
+          title={field === "search" ? "検索を閉じる" : "検索"}
+          aria-label="検索"
+          aria-pressed={field === "search"}
+          onClick={() => toggleField("search")}
+        >
+          <Icon name="search" size={13} />
         </button>
-      </form>
+        <button
+          class="text-btn with-icon"
+          aria-pressed={field === "add"}
+          onClick={() => toggleField("add")}
+        >
+          <Icon name="plus" size={12} />
+          お気に入り
+        </button>
+      </div>
     </div>
   );
 }

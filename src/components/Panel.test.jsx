@@ -17,6 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const { Panel } = await import("./Panel.jsx");
+const { EXIT_DURATION_MS } = await import("../presence.js");
 
 let root;
 
@@ -41,6 +42,9 @@ async function show(kind) {
 
 const $ = (selector) => root.querySelector(selector);
 const dialog = (label) => $(`[role="dialog"][aria-label="${label}"]`);
+/** お気に入りの下部のボタン(検索・追加)を押す。 */
+const openField = (label) =>
+  click([...root.querySelectorAll(".presets-footer button")].find((b) => (b.getAttribute("aria-label") ?? b.textContent.trim()) === label));
 const presetsFooterButton = (label) =>
   [...root.querySelectorAll(".presets-footer button")].find((b) => b.textContent.includes(label));
 
@@ -80,7 +84,19 @@ describe("Panel", () => {
     expect(dialog("プリセット")).toBeNull();
     expect(dialog("お気に入り")).toBeTruthy();
     await show(null);
+    // 閉じるときは中身を残したまま、ふわっと消す
+    expect(dialog("お気に入り")).toBeTruthy();
+    expect(document.documentElement.classList.contains("panel-closing")).toBe(true);
+    await act(() => new Promise((resolve) => setTimeout(resolve, EXIT_DURATION_MS + 20)));
     expect(dialog("お気に入り")).toBeNull();
+    expect(document.documentElement.classList.contains("panel-closing")).toBe(false);
+  });
+
+  it("マウスが戻ってきたら、プリセットのファイルを読み直す", async () => {
+    await show("presets");
+    invoke.mockClear();
+    await act(async () => document.documentElement.dispatchEvent(new MouseEvent("mouseenter")));
+    expect(invoke).toHaveBeenCalledWith("get_presets");
   });
 
   it("Esc で閉じる", async () => {
@@ -96,18 +112,19 @@ describe("Panel", () => {
     expect(document.documentElement.style.getPropertyValue("--font-size")).toBe("18px");
   });
 
-  it("お気に入りはフォルダーなしで並ぶ。選ぶとコピーして貼り付け、通知は出さずに閉じる", async () => {
+  it("お気に入りはフォルダーなしで並ぶ。選ぶとコピーして貼り付け、通知は出さず開いたままにする", async () => {
     await show("favorites");
     const popover = dialog("お気に入り");
     const rows = [...popover.querySelectorAll(".favorite-row")];
     // 複数行の文字は1行目を出す
     expect(rows.map((row) => row.querySelector(".preset-text").textContent)).toEqual(["よく使う文字", "2行ある"]);
     expect(popover.querySelector("details")).toBeNull();
+    await openField("検索");
     await type(popover.querySelector('[aria-label="お気に入りを検索"]'), "2行");
     expect(popover.querySelectorAll(".favorite-row").length).toBe(1);
     await click(popover.querySelector(".favorite-row"));
     expect(invoke).toHaveBeenCalledWith("copy_favorite", { text: "2行ある\nお気に入り", paste: true });
-    expect(invoke).toHaveBeenLastCalledWith("close_panel");
+    expect(invoke).not.toHaveBeenCalledWith("close_panel");
     expect($(".toast")).toBeNull();
   });
 
@@ -125,20 +142,23 @@ describe("Panel", () => {
     expect(invoke).toHaveBeenCalledWith("remove_favorite", { text: "よく使う文字" });
     // 外すボタンではコピーしない
     expect(invoke).not.toHaveBeenCalledWith("copy_favorite", expect.anything());
+    await openField("お気に入り");
     const form = popover.querySelector("form");
     expect(form.querySelector("button").disabled).toBe(true);
     await type(form.querySelector("input"), "新しい文字");
     await act(async () => form.requestSubmit());
     await act(async () => {});
     expect(invoke).toHaveBeenCalledWith("add_favorite", { text: "新しい文字" });
-    expect(form.querySelector("input").value).toBe("");
+    // 追加できたら入力欄を閉じる
+    expect(popover.querySelector("form")).toBeNull();
   });
 
-  it("プリセットをコピーすると閉じる", async () => {
+  it("プリセットをコピーしても閉じず、続けて選べる", async () => {
     await show("presets");
     await click($(".preset-leaf"));
     expect(invoke).toHaveBeenCalledWith("copy_preset", { path: ["挨拶", "朝"], paste: true });
-    expect(invoke).toHaveBeenLastCalledWith("close_panel");
+    expect(invoke).not.toHaveBeenCalledWith("close_panel");
+    expect(dialog("プリセット")).toBeTruthy();
   });
 
   it("コピーに失敗したら閉じずに知らせる", async () => {
@@ -264,6 +284,7 @@ describe("Panel", () => {
       return FAVORITES;
     });
     invoke.mockClear();
+    await openField("お気に入り");
     const form = dialog("お気に入り").querySelector("form");
     await type(form.querySelector("input"), "残す文字");
     await act(async () => form.requestSubmit());

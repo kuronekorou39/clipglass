@@ -1,8 +1,18 @@
 /* === Base === */
+/* マウスが乗ったときに背景の濃さをなめらかに変えるため、数値として登録する */
+@property --bg-alpha-live {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
 :root {
   /* 背景色のアルファ。「背景だけ透過」のときに不透明度の設定に合わせてスクリプトが書き換える。
      文字や画像には掛けないので、背景を薄くしても文字はくっきり残る */
   --bg-alpha: 1;
+  --bg-alpha-live: var(--bg-alpha);
+  /* 本体と別ウィンドウの間を動くときに一瞬薄くならないよう、戻すのは少し待つ */
+  transition: --bg-alpha-live 180ms ease 120ms;
   --font-mono: "Cascadia Code", "Consolas", "BIZ UDGothic", monospace;
   /* 行の並べ替えは listMotion.js が動かす。
      開閉のアニメーション。閉じる長さは presence.js の EXIT_DURATION_MS と合わせる */
@@ -152,9 +162,9 @@
 /* 色合いごとの3つ組から、透かす背景色を作る。見本の中でも作り直す */
 :root,
 [data-theme] {
-  --bg-primary: rgb(var(--bg-primary-rgb) / var(--bg-alpha));
-  --bg-secondary: rgb(var(--bg-secondary-rgb) / var(--bg-alpha));
-  --bg-hover: rgb(var(--bg-hover-rgb) / max(var(--bg-alpha), 0.6));
+  --bg-primary: rgb(var(--bg-primary-rgb) / var(--bg-alpha-live));
+  --bg-secondary: rgb(var(--bg-secondary-rgb) / var(--bg-alpha-live));
+  --bg-hover: rgb(var(--bg-hover-rgb) / max(var(--bg-alpha-live), 0.6));
 }
 
 /* タイトルバーだけ色が違う色合いは、その中の変数を差し替える */
@@ -171,11 +181,11 @@
 }
 
 [data-theme="xp"] #titlebar {
-  background: linear-gradient(180deg, #0a5fdc 0%, #2f7ff2 9%, #0a58d8 42%, #0349c4 88%, #0a3fa6 100%);
+  --bar-bg: linear-gradient(180deg, #0a5fdc 0%, #2f7ff2 9%, #0a58d8 42%, #0349c4 88%, #0a3fa6 100%);
 }
 
 [data-theme="classic"] #titlebar {
-  background: linear-gradient(90deg, #000080, #1084d0);
+  --bar-bg: linear-gradient(90deg, #000080, #1084d0);
 }
 
 [data-theme="xp"] .row-btn {
@@ -251,10 +261,26 @@ button {
   justify-content: space-between;
   height: var(--titlebar-height);
   padding: 0 4px 0 10px;
-  /* 上下のバーは透かさない */
-  background: var(--bg-solid);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+/* 上下のバーも一覧と同じ濃さで透かす。色合いによってはグラデーションなので、下敷きの濃さで変える */
+#titlebar,
+#footer {
+  position: relative;
+  isolation: isolate;
+}
+
+#titlebar::before,
+#footer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--bar-bg, var(--bg-solid));
+  opacity: var(--bg-alpha-live);
+  pointer-events: none;
 }
 
 .titlebar-title {
@@ -445,7 +471,6 @@ button {
 }
 
 .item.current {
-  cursor: default;
   background: var(--bg-secondary);
   box-shadow: inset 3px 0 0 var(--accent);
   padding-top: 1em;
@@ -485,31 +510,27 @@ button {
   align-self: flex-start;
 }
 
-.item-data summary,
+.item-data-toggle,
 .badge-fav {
   padding-block: calc(0.2em + 1px);
 }
 
-/* 大きさ・時刻・書式・形式。ふだんは畳んでおく */
-.item-data {
-  color: var(--text-dim);
-}
-
-.item-data summary {
+/* 大きさ・時刻・書式・形式。ふだんは畳み、見出しは行の右端に置く */
+.item-data-toggle {
   display: flex;
   align-items: center;
   gap: 0.3em;
+  margin-left: auto;
+  padding-inline: 0;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font: inherit;
   cursor: pointer;
-  width: fit-content;
-  list-style: none;
 }
 
-.item-data summary::-webkit-details-marker {
-  display: none;
-}
-
-/* 開閉の印は幅を決めて回す。既定の印は開閉で形が変わり、見出しがずれる */
-.item-data summary::before {
+/* 開閉の印は幅を決めて回す */
+.item-data-toggle::before {
   content: "▸";
   width: 1em;
   flex-shrink: 0;
@@ -517,25 +538,25 @@ button {
   transition: transform var(--open-duration) ease;
 }
 
-.item-data[open] summary::before {
+.item-data-toggle[aria-expanded="true"]::before {
   transform: rotate(90deg);
 }
 
-.item-data summary:hover {
+.item-data-toggle:hover {
   color: var(--text-secondary);
 }
 
-.item-data dl {
+/* 開いた中身は次の行に幅いっぱいで出すので、見出しの位置は動かない */
+.item-data-list {
+  flex-basis: 100%;
   display: grid;
   grid-template-columns: auto 1fr;
   gap: 0.2em 0.8em;
-  margin-top: 0.3em;
   padding-left: 1em;
   color: var(--text-secondary);
-  user-select: text;
 }
 
-.item-data dt {
+.item-data-list dt {
   color: var(--text-dim);
 }
 
@@ -544,8 +565,43 @@ button {
   white-space: pre-line;
 }
 
+/* 一番上へ戻るボタン。一覧の高さを増やさないよう、高さ0の帯から上へはみ出して置く */
+.scroll-top {
+  position: sticky;
+  bottom: 0.5em;
+  z-index: 3;
+  display: flex;
+  justify-content: flex-end;
+  height: 0;
+  padding-right: 0.5em;
+  pointer-events: none;
+}
+
+.scroll-top .icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2em;
+  height: 2em;
+  transform: translateY(-100%);
+  background: rgb(var(--bg-secondary-rgb));
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text-secondary);
+  pointer-events: auto;
+  animation: scroll-top-in var(--fade-duration) ease;
+}
+
+.scroll-top .icon-btn:hover {
+  background: rgb(var(--bg-hover-rgb));
+}
+
+@keyframes scroll-top-in {
+  from { opacity: 0; }
+}
+
 /* === Preview of the current item === */
-/* 長い文字は見える範囲だけを出し、スクロールバーは出さない。選択のドラッグでも動かさない */
+/* 長い文字は見える範囲だけを出し、スクロールバーは出さない */
 .preview-text {
   font-family: var(--font-mono);
   color: var(--text-bright);
@@ -553,8 +609,6 @@ button {
   overflow: clip;
   white-space: pre;
   tab-size: 4;
-  user-select: text;
-  cursor: text;
 }
 
 .preview-text.wrap {
@@ -663,7 +717,7 @@ button {
   gap: 4px;
   padding: 4px 6px;
   background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
   flex-shrink: 0;
   font-size: 12px;
 }
@@ -962,7 +1016,6 @@ button {
   height: var(--footer-height);
   /* 下辺と左右の下のつまみの帯にボタンが掛からないよう、内側に寄せる */
   padding: 0 calc(var(--grip-corner) + 2px) var(--grip-edge);
-  background: var(--bg-solid);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
   font-size: 12px;
@@ -1028,6 +1081,35 @@ button {
   background: var(--bg-solid);
   border: 1px solid var(--border-light);
   border-radius: 6px;
+}
+
+/* 設定は別ウィンドウいっぱいに広げる */
+#app > .panel {
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  gap: 1em;
+  overflow: hidden;
+  padding: 1.1em 1.25em;
+  border: none;
+  border-radius: 0;
+  animation: fade-in var(--open-duration) ease-out;
+}
+
+/* 見出しとタブは動かさず、中身だけをスクロールする */
+#app > .panel .panel-body {
+  flex: 1;
+  min-height: 0;
+  gap: 1em;
+  overflow-y: auto;
+  padding: 0.1em 0.25em 0.25em 0;
+}
+
+/* 別ウィンドウは、消えるときも中身ごとふわっと薄くする */
+.panel-closing body {
+  pointer-events: none;
+  animation: fade-out var(--fade-duration) ease-in forwards;
 }
 
 .panel-title {
@@ -1642,9 +1724,9 @@ button {
 .help-list {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.35em 0.9em;
-  font-size: 0.9em;
-  user-select: text;
+  gap: 0.55em 1.2em;
+  margin: 0;
+  font-size: 0.92em;
 }
 
 .help-list dt {
@@ -1653,13 +1735,36 @@ button {
 }
 
 .help-list dd {
+  margin: 0;
   color: var(--text-secondary);
 }
 
-.link-row {
+/* 設定の項目は、関係するものをまとめて余白を取る */
+.setting-group {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.4em;
+  flex-direction: column;
+  flex: none;
+  gap: 0.9em;
+  padding: 0.9em 1em 1em;
+  background: rgb(var(--bg-secondary-rgb));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.setting-group select {
+  padding: 0.3em 0.5em;
+  background: var(--bg-solid-input);
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.setting-group h3 {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.85em;
+  font-weight: 600;
 }
 
 .setting-note {
@@ -1772,7 +1877,18 @@ button {
   transition: transform var(--open-duration) ease;
 }
 
+/* マウスが乗っているあいだは読みやすい濃さに戻す。不透明度のつまみを動かす間は設定の濃さを見せる */
+:root:hover:not(:has(#opacity-slider:active)),
+:root.linked-hover:not(:has(#opacity-slider:active)) {
+  --bg-alpha-live: max(var(--bg-alpha), 0.9);
+  transition-delay: 0s;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    transition: none;
+  }
+
   *,
   *::before,
   *::details-content {

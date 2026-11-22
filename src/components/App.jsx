@@ -13,19 +13,27 @@ import { HistoryItem } from "./HistoryItem.jsx";
 import { AddPresetDialog } from "./AddPresetDialog.jsx";
 import { ArchiveList } from "./ArchiveList.jsx";
 import { ItemMenu } from "./ItemMenu.jsx";
-import { SettingsPanel } from "./SettingsPanel.jsx";
 import { ResizeHandles } from "./ResizeHandles.jsx";
-import { QUICK_PICK_COUNT, quickPickIndex, windowKeyAction } from "../windowKeys.js";
+import { QUICK_PICK_COUNT, windowKeyAction } from "../windowKeys.js";
+import { quickKeyPrefix } from "../quickKeys.js";
 import { richFormatLabels } from "../format.js";
 import { usePresence } from "../presence.js";
+import { useKeyboard } from "../keyboardFocus.js";
+import { Icon } from "./Icon.jsx";
 
 const STATE_EVENT = "clipboard-state";
 const NOTICE_EVENT = "notice";
 /** 横の別ウィンドウ(プリセット・お気に入り)に出している中身。閉じたときは null。 */
 const PANEL_EVENT = "panel";
+/** 別ウィンドウの設定画面で設定を変えたことを受け取るイベント。 */
+const CONFIG_EVENT = "config-changed";
+/** 修飾キー+数字で選ばれた行の位置を受け取るイベント。 */
+const QUICK_PICK_EVENT = "quick-pick";
 const TOAST_DURATION_MS = 2500;
 const EMPTY_STATE = { paused: false, status: null, currentId: null, items: [] };
 const ALL_KINDS = KINDS.map(([kind]) => kind);
+/** これより下までスクロールしたら、一番上へ戻るボタンを出す(px)。 */
+const SCROLL_TOP_THRESHOLD = 200;
 
 export function App() {
   const [settings, setSettings] = useState(() => loadSettings(localStorage));
@@ -38,12 +46,14 @@ export function App() {
   // 横の別ウィンドウに出している中身("presets" か "favorites")。閉じていれば null
   const [panel, setPanel] = useState(null);
   const [config, setConfig] = useState(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [presets, setPresets] = useState([]);
   const [presetsError, setPresetsError] = useState(null);
   const [menu, setMenu] = useState(null);
   // プリセットに加えようとしている履歴の項目。入れる場所を選ぶあいだ持つ
   const [presetTarget, setPresetTarget] = useState(null);
+  const [scrolled, setScrolled] = useState(false);
+  // 文字を打つ場面でだけキーボードを受け取る。ふだんは入力中のアプリのカーソルを奪わない
+  useKeyboard(presetTarget !== null || filterOpen);
   const toastTimer = useRef(null);
   const searchRef = useRef(null);
   const historyRef = useRef(null);
@@ -51,7 +61,6 @@ export function App() {
   const rowRects = useRef(new Map());
   const animatedState = useRef(clipboard);
   // 閉じるアニメーションのあいだも描画を残す
-  const settingsPresence = usePresence(settingsOpen);
   const presetTargetPresence = usePresence(presetTarget !== null);
   // 閉じる途中も中身を描けるよう、最後に選んだ項目を残す
   const lastPresetTarget = useRef(null);
@@ -106,10 +115,29 @@ export function App() {
       listen(STATE_EVENT, (event) => setClipboard(event.payload)),
       listen(NOTICE_EVENT, (event) => showToast(event.payload, true)),
       listen(PANEL_EVENT, (event) => setPanel(event.payload)),
+      listen(QUICK_PICK_EVENT, (event) => quickPick.current(event.payload)),
+      listen(CONFIG_EVENT, () => loadConfig().catch((error) => showToast(String(error), true))),
     ];
     invoke("get_state").then(setClipboard);
-    return () => unlisteners.forEach((unlisten) => unlisten.then((stop) => stop()));
+    // 別ウィンドウの設定画面で変えた値に追い付く
+    const onStorage = () => setSettings(loadSettings(localStorage));
+    window.addEventListener("storage", onStorage);
+    return () => {
+      unlisteners.forEach((unlisten) => unlisten.then((stop) => stop()));
+      window.removeEventListener("storage", onStorage);
+    };
   }, []);
+
+  // 設定は範囲外のクリックで閉じる。本体はクリックでフォーカスを取らないので、ここで受ける
+  useEffect(() => {
+    if (panel !== "settings") return undefined;
+    const onMouseDown = (e) => {
+      // 設定ボタン自身は、クリックで開閉するので除く
+      if (!e.target.closest?.('button[aria-label="設定"]')) invoke("close_panel");
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    return () => window.removeEventListener("mousedown", onMouseDown, true);
+  }, [panel]);
 
   // 履歴が変わったら、行を前の位置から今の位置まで滑らせる。絞り込みで並びが変わっただけの
   // ときは動かさないので、位置は毎回覚え直し、動かすのは履歴が変わったときだけにする
@@ -146,11 +174,6 @@ export function App() {
   // Ctrl と +/-/0 またはホイールでも文字サイズを変えられる
   useEffect(() => {
     const onKeyDown = (e) => {
-      const index = quickPickIndex(e);
-      if (index !== null && quickPick.current(index)) {
-        e.preventDefault();
-        return;
-      }
       const nudge = windowKeyAction(e);
       if (nudge) {
         e.preventDefault();
@@ -158,7 +181,6 @@ export function App() {
         return;
       }
       if (e.key === "Escape") {
-        setSettingsOpen(false);
         setMenu(null);
         invoke("close_panel");
         setPresetTarget(null);
@@ -222,27 +244,6 @@ export function App() {
     [saving, settings.saveDir],
   );
 
-  /** 失敗を通知にして、設定の表示を最新に合わせる。 */
-  const applyConfig = useCallback(async (command, args) => {
-    try {
-      await invoke(command, args);
-    } catch (error) {
-      showToast(String(error), true);
-    }
-    await loadConfig();
-  }, []);
-
-  const runOrToast = useCallback(async (action, successMessage) => {
-    try {
-      await action();
-      if (successMessage) showToast(successMessage);
-      return true;
-    } catch (error) {
-      showToast(String(error), true);
-      return false;
-    }
-  }, []);
-
   /** コマンドを呼び、失敗は通知にする。戻り値も使えるよう `{ ok, value }` で返す。 */
   const call = useCallback(async (command, args, successMessage) => {
     try {
@@ -271,21 +272,31 @@ export function App() {
   };
 
   const paste = settings.pasteOnSelect;
+  const quickPrefix = quickKeyPrefix(config?.quickKeys);
   const { paused, status, currentId, items } = clipboard;
   // 一覧から外れた項目を保管する設定か。しないなら「過去の履歴」を出さない
   const archiving = Boolean(config?.historyPersist && config.archiveDays > 0);
   const filtering = query.trim() !== "" || kinds.length !== ALL_KINDS.length;
   const visibleItems = filtering ? filterItems(items, { query, kinds }) : items;
 
-  quickPick.current = (index) => {
-    // 設定やメニューを開いているあいだは、裏の一覧を選ばない
-    if (settingsOpen || menu || presetTarget) return false;
-    const item = visibleItems[index];
-    if (!item) return false;
+  const pickItem = (item) => {
     // 先頭は今のクリップボードの中身。「文字だけにする」で書式を外してあれば、そのまま文字だけで貼る
     const plain = item.id === currentId && item.storedRich.length > 0 && richFormatLabels(item.formats).length === 0;
     call("copy_item", { id: item.id, plain, paste });
+  };
+
+  quickPick.current = (index) => {
+    // 設定やメニューを開いているあいだは、裏の一覧を選ばない
+    if (panel === "settings" || menu || presetTarget) return false;
+    const item = visibleItems[index];
+    if (!item) return false;
+    pickItem(item);
     return true;
+  };
+
+  const scrollToTop = () => {
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    historyRef.current.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
   };
 
   return (
@@ -299,35 +310,31 @@ export function App() {
         onOpacityChange={(opacity) => updateSettings({ opacity })}
         onClose={() => invoke("hide_window")}
       />
-      {filterOpen && (
-        <FilterBar
-          query={query}
-          onQueryChange={setQuery}
-          kinds={kinds}
-          onKindsChange={setKinds}
-          onClose={closeFilter}
-          searchRef={searchRef}
-        />
-      )}
       {paused && (
         <div class="status-row status-paused">
           読み取りを停止中です。コピーしても一覧は更新されません
         </div>
       )}
       {status && <StatusRow status={status} />}
-      <div id="history" ref={historyRef}>
+      <div
+        id="history"
+        ref={historyRef}
+        onScroll={(e) => setScrolled(e.currentTarget.scrollTop > SCROLL_TOP_THRESHOLD)}
+      >
         {visibleItems.map((item, index) => (
           <HistoryItem
             key={item.id}
             item={item}
             current={item.id === currentId}
-            quickKey={index < QUICK_PICK_COUNT ? index + 1 : null}
+            quickKey={quickPrefix !== null && index < QUICK_PICK_COUNT ? index + 1 : null}
+            quickPrefix={quickPrefix}
             wrap={settings.wrap}
             saving={saving}
             // 先頭行の「文字だけにする」は今の内容の入れ替えなので、貼り付けない
             onCopy={(plain) =>
               call("copy_item", { id: item.id, plain, paste: paste && item.id !== currentId })
             }
+            onPick={() => pickItem(item)}
             onSave={() => handleSave(item.id)}
             onMenu={(position) => setMenu({ item, ...position })}
           />
@@ -350,16 +357,35 @@ export function App() {
             onRemove={async (item) => (await call("remove_archived", { key: item.key })).ok}
           />
         )}
+        {scrolled && (
+          <div class="scroll-top">
+            <button class="icon-btn" title="一番上へ" aria-label="一番上へ" onClick={scrollToTop}>
+              <Icon name="up" size={14} />
+            </button>
+          </div>
+        )}
       </div>
+      {/* 検索は、開くボタンのある下部に寄せて出す */}
+      {filterOpen && (
+        <FilterBar
+          query={query}
+          onQueryChange={setQuery}
+          kinds={kinds}
+          onKindsChange={setKinds}
+          onClose={closeFilter}
+          searchRef={searchRef}
+        />
+      )}
       <Footer
         presetsOpen={panel === "presets"}
         onPresetsToggle={() => call("toggle_panel", { kind: "presets" })}
         favoritesOpen={panel === "favorites"}
         onFavoritesToggle={() => call("toggle_panel", { kind: "favorites" })}
+        onPanelHover={(kind) => call("hover_panel", { kind })}
         filterOpen={filterOpen}
         filtering={filtering}
         onFilterToggle={() => (filterOpen ? closeFilter() : setFilterOpen(true))}
-        onSettingsOpen={() => setSettingsOpen(true)}
+        onSettingsOpen={() => call("toggle_panel", { kind: "settings" })}
       />
       {presetTargetPresence.mounted && lastPresetTarget.current && (
         <AddPresetDialog
@@ -380,24 +406,6 @@ export function App() {
           onAddPreset={() => setPresetTarget(menu.item)}
           onRemove={() => call("remove_item", { id: menu.item.id })}
           onClose={() => setMenu(null)}
-        />
-      )}
-      {settingsPresence.mounted && config && (
-        <SettingsPanel
-          closing={settingsPresence.closing}
-          config={config}
-          settings={settings}
-          onFontSizeStep={handleFontSizeStep}
-          onWrapChange={(wrap) => updateSettings({ wrap })}
-          onThemeChange={(theme) => updateSettings({ theme })}
-          onPasteChange={(pasteOnSelect) => updateSettings({ pasteOnSelect })}
-          onOpenLink={(target) => runOrToast(() => invoke("open_link", { target }))}
-          onClose={() => setSettingsOpen(false)}
-          onApply={applyConfig}
-          onSuspendHotkey={(suspended) => runOrToast(() => invoke("suspend_hotkey", { suspended }))}
-          onOpenDataDir={() => runOrToast(() => invoke("open_data_dir"))}
-          onSnap={(corner) => runOrToast(() => invoke("snap_window", { corner }))}
-          onResetSize={() => runOrToast(() => invoke("reset_window_size"))}
         />
       )}
       {toast && <div class={`toast${toast.isError ? " toast-error" : ""}`}>{toast.message}</div>}

@@ -6,13 +6,13 @@
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-    VIRTUAL_KEY, VK_CONTROL, VK_V,
+    GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, IsWindow, SetForegroundWindow, EVENT_SYSTEM_FOREGROUND,
@@ -31,6 +31,11 @@ const IGNORED_CLASSES: [&str; 4] = [
     "TopLevelWindowForOverflowXamlIsland",
 ];
 const CLASS_NAME_CAPACITY: usize = 128;
+/// Ctrl+Shift+数字 などで選んだとき、Shift や Alt が離されるのを待つ上限。
+/// 押されたまま送ると Ctrl+Shift+V のような別の操作になる。
+const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(1500);
+const MODIFIER_POLL: Duration = Duration::from_millis(10);
+const OTHER_MODIFIERS: [VIRTUAL_KEY; 4] = [VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN];
 
 /// 直前に前面にあった、ほかのアプリのウィンドウ。なければ 0。
 static LAST_FOREGROUND: AtomicIsize = AtomicIsize::new(0);
@@ -62,6 +67,10 @@ unsafe extern "system" fn on_foreground(
     _time: u32,
 ) {
     remember(hwnd);
+    // 自分のウィンドウの通知は受けないので、届いたらほかのアプリが前面になったということ
+    if let Some(app) = crate::watcher::app() {
+        crate::foreground_left_app(app);
+    }
 }
 
 /// 前面のウィンドウの切り替わりを見張り始める。通知は呼び出したスレッドのメッセージループに
@@ -106,6 +115,30 @@ fn ctrl_v_inputs() -> [INPUT; 4] {
     ]
 }
 
+/// V だけを押して離す入力の並び。Ctrl が押されたままのときに使う(Ctrl を勝手に離さない)。
+fn v_inputs() -> [INPUT; 2] {
+    [
+        key(VK_V, KEYBD_EVENT_FLAGS::default()),
+        key(VK_V, KEYEVENTF_KEYUP),
+    ]
+}
+
+fn is_down(virtual_key: VIRTUAL_KEY) -> bool {
+    unsafe { GetAsyncKeyState(i32::from(virtual_key.0)) < 0 }
+}
+
+/// Shift・Alt・Win が離されるまで待つ。上限までに離されなければ `false`。
+fn wait_for_modifier_release() -> bool {
+    let start = Instant::now();
+    while OTHER_MODIFIERS.iter().any(|modifier| is_down(*modifier)) {
+        if start.elapsed() >= MODIFIER_RELEASE_TIMEOUT {
+            return false;
+        }
+        thread::sleep(MODIFIER_POLL);
+    }
+    true
+}
+
 /// 直前に使っていたウィンドウを前面に戻し、Ctrl+V を送る。ウィンドウがもうなければ何もしない
 /// (クリップボードには入っているので、手で貼り付けられる)。
 pub fn paste_into_last_window() {
@@ -116,15 +149,42 @@ pub fn paste_into_last_window() {
     // 待つあいだ監視スレッドを止めないよう、別のスレッドで行う。HWND は数値にして渡す
     thread::spawn(move || unsafe {
         let hwnd = HWND(target as *mut _);
-        if !IsWindow(Some(hwnd)).as_bool() || !SetForegroundWindow(hwnd).as_bool() {
+        if !IsWindow(Some(hwnd)).as_bool() {
+            return;
+        }
+        // Clipglass はクリックでフォーカスを取らないので、ふつうは相手が前面のまま。
+        // 前面にないプロセスからの切り替えは拒まれることがあるので、必要なときだけ行う
+        if GetForegroundWindow() != hwnd && !SetForegroundWindow(hwnd).as_bool() {
             return;
         }
         thread::sleep(FOCUS_SETTLE_DELAY);
         if GetForegroundWindow() != hwnd {
             return;
         }
-        SendInput(&ctrl_v_inputs(), size_of::<INPUT>() as i32);
+        // 届かなくてもクリップボードには入っているので、手で貼り付けられる
+        if !wait_for_modifier_release() || GetForegroundWindow() != hwnd {
+            return;
+        }
+        if is_down(VK_CONTROL) {
+            SendInput(&v_inputs(), size_of::<INPUT>() as i32);
+        } else {
+            SendInput(&ctrl_v_inputs(), size_of::<INPUT>() as i32);
+        }
     });
+}
+
+/// キーボードを受け取っていたあと、直前に使っていたウィンドウへ返す。
+pub fn focus_last_window() {
+    let target = LAST_FOREGROUND.load(Ordering::Relaxed);
+    if target == 0 {
+        return;
+    }
+    unsafe {
+        let hwnd = HWND(target as *mut _);
+        if IsWindow(Some(hwnd)).as_bool() {
+            let _ = SetForegroundWindow(hwnd);
+        }
+    }
 }
 
 #[cfg(test)]

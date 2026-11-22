@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WINDOW_STEP, quickPickIndex, windowKeyAction } from "./windowKeys.js";
+import { WINDOW_STEP, windowKeyAction } from "./windowKeys.js";
 
 function key(name, modifiers = {}, target = document.body) {
   return { key: name, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, target, ...modifiers };
@@ -33,35 +33,5 @@ describe("windowKeyAction", () => {
     expect(windowKeyAction(key("ArrowLeft", MOVE, input))).toBe(null);
     expect(windowKeyAction(key("ArrowLeft", RESIZE, textarea))).toBe(null);
     expect(windowKeyAction(key("ArrowLeft", MOVE, document.createElement("button")))).not.toBe(null);
-  });
-});
-
-describe("quickPickIndex", () => {
-  const digit = (code, modifiers = {}, target = document.body) => ({ ...key("", modifiers, target), code });
-
-  it("1〜9 とテンキーの 1〜9 を、先頭からの位置にする", () => {
-    expect(quickPickIndex(digit("Digit1"))).toBe(0);
-    expect(quickPickIndex(digit("Digit9"))).toBe(8);
-    expect(quickPickIndex(digit("Numpad3"))).toBe(2);
-  });
-
-  it("0 やほかのキー、修飾キーとの組み合わせは対象外", () => {
-    expect(quickPickIndex(digit("Digit0"))).toBeNull();
-    expect(quickPickIndex(digit("KeyA"))).toBeNull();
-    expect(quickPickIndex(digit("Digit2", { ctrlKey: true }))).toBeNull();
-    expect(quickPickIndex(digit("Digit2", { shiftKey: true }))).toBeNull();
-  });
-
-  it("押し続けて届く繰り返しは対象外", () => {
-    expect(quickPickIndex(digit("Digit2", { repeat: true }))).toBeNull();
-  });
-
-  it("キーの位置の情報がないイベントは対象外", () => {
-    expect(quickPickIndex(key("1"))).toBeNull();
-  });
-
-  it("文字の入力中は横取りしない", () => {
-    expect(quickPickIndex(digit("Digit2", {}, document.createElement("input")))).toBeNull();
-    expect(quickPickIndex(digit("Digit2", {}, document.createElement("textarea")))).toBeNull();
   });
 });

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "preact/hooks";
 import { presetDescription } from "../presets.js";
 import { innerFolderKeys, pathKey } from "../presetView.js";
 import { countLeaves, firstLine } from "../search.js";
@@ -20,10 +21,15 @@ function IconButton({ icon, title, label, onClick }) {
   );
 }
 
+/** フォルダーにマウスを留めてから開くまでの長さ(ms)。通り過ぎただけでは開かない。 */
+export const FOLDER_HOVER_DELAY_MS = 280;
+
 const samePath = (a, b) => a !== null && a.length === b.length && a.every((part, i) => part === b[i]);
 
 function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, onSetFolders, onCopy, onEdit }) {
   const editing = samePath(editingPath, node.path) ? " editing" : "";
+  const hoverTimer = useRef(null);
+  useEffect(() => () => clearTimeout(hoverTimer.current), []);
   if (node.children) {
     const key = pathKey(node.path);
     // 検索中は一致を隠さないよう開いておく。閉じていた記憶は検索の前後で保つ
@@ -37,7 +43,15 @@ function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, o
           if (!forceOpen && e.target.open !== open) onToggleFolder(key, e.target.open);
         }}
       >
-        <summary class={editing}>
+        <summary
+          class={editing}
+          onMouseEnter={() => {
+            if (open) return;
+            hoverTimer.current = setTimeout(() => onToggleFolder(key, true), FOLDER_HOVER_DELAY_MS);
+          }}
+          onMouseLeave={() => clearTimeout(hoverTimer.current)}
+          onClick={() => clearTimeout(hoverTimer.current)}
+        >
           <Icon name="folder" />
           <span class="preset-name">{node.name}</span>
           <span class="preset-count">{countLeaves(node.children)}件</span>
@@ -107,7 +121,7 @@ function PresetNode({ node, editingPath, collapsed, forceOpen, onToggleFolder, o
 }
 
 /**
- * プリセットの木。フォルダーは折りたため、プリセットはクリックでコピーする。✎ で編集する。
+ * プリセットの木。フォルダーはマウスを乗せると開き、クリックで開閉する。プリセットはクリックでコピーする。✎ で編集する。
  * プリセットの行はコピーする文字を先に出し、説明は付けたときだけ右に添える。
  * 入れ子のフォルダーを持つ行には、中を全部開く／閉じるボタンを添える。
  */

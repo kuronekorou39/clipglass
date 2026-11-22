@@ -109,11 +109,6 @@ async function settle() {
   await act(() => new Promise((resolve) => setTimeout(resolve, EXIT_DURATION_MS + 20)));
 }
 
-async function openSettings(tab) {
-  await click($('button[aria-label="設定"]'));
-  await click([...root.querySelectorAll('[role="tab"]')].find((el) => el.textContent === tab));
-}
-
 beforeEach(() => {
   localStorage.clear();
   invoke.mockReset();
@@ -173,17 +168,94 @@ describe("App: タイトルバー", () => {
 
   it("数字キーでのコピーが失敗したら知らせる", async () => {
     await mount({ overrides: { copy_item: new Error("書き込めません") } });
-    await key({ code: "Digit2" });
+    await fire("quick-pick", 1);
     await act(async () => {});
     expect(toast().textContent).toBe("書き込めません");
   });
 
-  it("数字キーを押し続けても、貼り付けは1回だけ", async () => {
+  it("先頭行をクリックすると、今の書式のまま貼り付ける", async () => {
     await mount();
-    await key({ code: "Digit2" });
-    await key({ code: "Digit2", repeat: true });
-    await key({ code: "Digit2", repeat: true });
-    expect(invoke.mock.calls.filter(([command]) => command === "copy_item").length).toBe(1);
+    await click(items()[0]);
+    expect(invoke).toHaveBeenCalledWith("copy_item", { id: 1, plain: false, paste: true });
+  });
+
+  it("「データ」を開いても、行は選ばれない", async () => {
+    await mount();
+    await click(items()[0].querySelector(".item-data-toggle"));
+    expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
+  });
+
+  it("下へスクロールすると一番上へ戻るボタンが出て、押すとなめらかに戻る", async () => {
+    await mount();
+    const history = $("#history");
+    history.scrollTo = vi.fn();
+    expect($('[aria-label="一番上へ"]')).toBeNull();
+    history.scrollTop = 500;
+    await act(async () => history.dispatchEvent(new Event("scroll")));
+    await click($('[aria-label="一番上へ"]'));
+    expect(history.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
+    history.scrollTop = 0;
+    await act(async () => history.dispatchEvent(new Event("scroll")));
+    expect($('[aria-label="一番上へ"]')).toBeNull();
+  });
+
+  it("動きを減らす設定では、一番上へ一気に戻る", async () => {
+    window.matchMedia = () => ({ matches: true });
+    await mount();
+    const history = $("#history");
+    history.scrollTo = vi.fn();
+    history.scrollTop = 500;
+    await act(async () => history.dispatchEvent(new Event("scroll")));
+    await click($('[aria-label="一番上へ"]'));
+    delete window.matchMedia;
+    expect(history.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+  });
+
+  it("プリセットのボタンに少し留まると開き、通り過ぎただけでは開かない", async () => {
+    await mount();
+    vi.useFakeTimers();
+    const button = $('#footer [aria-label="プリセット"]');
+    await act(async () => button.dispatchEvent(new MouseEvent("mouseenter")));
+    await act(async () => button.dispatchEvent(new MouseEvent("mouseleave")));
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(invoke).not.toHaveBeenCalledWith("hover_panel", expect.anything());
+    await act(async () => button.dispatchEvent(new MouseEvent("mouseenter")));
+    await act(async () => vi.advanceTimersByTime(1000));
+    expect(invoke).toHaveBeenCalledWith("hover_panel", { kind: "presets" });
+  });
+
+  it("文字を打つ場面でだけキーボードを受け取り、終わったら返す", async () => {
+    await mount();
+    expect(invoke).not.toHaveBeenCalledWith("take_keyboard");
+    await click($('#footer [aria-label="検索と絞り込み"]'));
+    expect(invoke).toHaveBeenCalledWith("take_keyboard");
+    expect(invoke).not.toHaveBeenCalledWith("release_keyboard");
+    await click($('#footer [aria-label="検索と絞り込み"]'));
+    expect(invoke).toHaveBeenCalledWith("release_keyboard");
+  });
+
+  it("組み合わせを「使わない」にすると、行の番号を出さない", async () => {
+    await mount({ config: { ...CONFIG, quickKeys: "off" } });
+    expect($(".item-key kbd")).toBeNull();
+  });
+
+  it("選んだ組み合わせを、番号のツールチップに出す", async () => {
+    await mount({ config: { ...CONFIG, quickKeys: "ctrl+alt" } });
+    expect($(".item-key kbd").title).toBe("Ctrl + Alt + 1 で貼り付け");
+  });
+
+  it("修飾キー+数字は Rust から届いて、その位置の行を貼り付ける", async () => {
+    await mount();
+    await fire("quick-pick", 1);
+    expect(invoke).toHaveBeenCalledWith("copy_item", { id: 2, plain: false, paste: true });
+  });
+
+  it("検索欄は下部のボタンの近くに出す", async () => {
+    await mount();
+    await click($('#footer [aria-label="検索と絞り込み"]'));
+    const order = [...root.children].map((el) => el.id);
+    expect(order.indexOf("filter-bar")).toBeGreaterThan(order.indexOf("history"));
+    expect(order.indexOf("filter-bar")).toBeLessThan(order.indexOf("footer"));
   });
 
   it("隠すボタンでウィンドウを隠す", async () => {
@@ -351,29 +423,28 @@ describe("App: 書式とコピー", () => {
 
   it("書式を外した先頭行を数字キーで選ぶと、文字だけのまま貼り付ける", async () => {
     await mount({ state: { ...STATE, items: [textItem(1, "外した", { formats: [], storedRich: RICH })] } });
-    await key({ code: "Digit1", key: "1" });
+    await fire("quick-pick", 0);
     expect(invoke).toHaveBeenCalledWith("copy_item", { id: 1, plain: true, paste: true });
   });
 
   it("書式が残っている先頭行を数字キーで選ぶと、書式ごと貼り付ける", async () => {
     await mount({ state: { ...STATE, items: [textItem(1, "書式", { formats: RICH, storedRich: RICH })] } });
-    await key({ code: "Digit1", key: "1" });
+    await fire("quick-pick", 0);
     expect(invoke).toHaveBeenCalledWith("copy_item", { id: 1, plain: false, paste: true });
   });
 
   it("並んでいない番号の数字キーでは何もしない", async () => {
     await mount();
-    const event = await key({ code: "Digit5", key: "5" });
+    await fire("quick-pick", 4);
     expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
-    expect(event.defaultPrevented).toBe(false);
   });
 
   it("メニューやダイアログを開いているあいだは、数字キーで裏の一覧を選ばない", async () => {
     await mount();
     await menuOf(items()[1]);
-    await key({ code: "Digit1", key: "1" });
+    await fire("quick-pick", 0);
     await click(menuEntry("プリセットに追加"));
-    await key({ code: "Digit1", key: "1" });
+    await fire("quick-pick", 0);
     expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
   });
 });
@@ -607,41 +678,5 @@ describe("App: 過去の履歴の失敗", () => {
     await click($('.item.archived [aria-label="過去の履歴から削除"]'));
     expect($(".item.archived")).toBeTruthy();
     expect(toast().textContent).toBe("消せません");
-  });
-});
-
-describe("App: 設定から送るコマンド", () => {
-  it("設定の変更に失敗したら通知を出し、表示を読み直す", async () => {
-    await mount({ overrides: { set_autostart: new Error("登録できません") } });
-    await openSettings("起動");
-    invoke.mockClear();
-    await click([...root.querySelectorAll('[role="switch"]')].find((el) => el.textContent.includes("Windows と一緒に起動")));
-    expect(toast().textContent).toBe("登録できません");
-    expect(invoke).toHaveBeenLastCalledWith("get_config");
-  });
-
-  it("標準の大きさに戻す・データフォルダーを開く", async () => {
-    await mount();
-    await openSettings("ウィンドウ");
-    await click([...root.querySelectorAll("button")].find((b) => b.textContent.includes("標準の大きさに戻す")));
-    expect(invoke).toHaveBeenCalledWith("reset_window_size");
-    await click([...root.querySelectorAll('[role="tab"]')].find((el) => el.textContent === "履歴"));
-    await click([...root.querySelectorAll("button")].find((b) => b.textContent.includes("データフォルダーを開く")));
-    expect(invoke).toHaveBeenCalledWith("open_data_dir");
-  });
-
-  it("開けなかったら通知を出す", async () => {
-    await mount({ overrides: { open_data_dir: new Error("開けません") } });
-    await openSettings("履歴");
-    await click([...root.querySelectorAll("button")].find((b) => b.textContent.includes("データフォルダーを開く")));
-    expect(toast().textContent).toBe("開けません");
-  });
-
-  it("✕ で設定を閉じる", async () => {
-    await mount();
-    await click($('button[aria-label="設定"]'));
-    await click($('[aria-label="設定"] [aria-label="閉じる"]'));
-    await settle();
-    expect($('[role="dialog"][aria-label="設定"]')).toBeNull();
   });
 });

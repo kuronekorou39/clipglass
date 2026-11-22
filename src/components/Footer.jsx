@@ -1,6 +1,10 @@
+import { useEffect, useRef } from "preact/hooks";
 import { onDragRegionMouseDown } from "../windowDrag.js";
 
 import { Icon } from "./Icon.jsx";
+
+/** ボタンにマウスを乗せてから、横の別ウィンドウを開くまでの長さ(ms)。 */
+export const PANEL_HOVER_DELAY_MS = 150;
 
 /**
  * 下部のバー。プリセットとお気に入りを開くボタン、絞り込みの開閉、設定。空いているところで移動できる。
@@ -11,31 +15,49 @@ export function Footer({
   onPresetsToggle,
   favoritesOpen,
   onFavoritesToggle,
+  onPanelHover,
   filterOpen,
   filtering,
   onFilterToggle,
   onSettingsOpen,
 }) {
+  // 通り過ぎただけでは開かないよう、少し留まってから開く
+  const hoverTimer = useRef(null);
+  useEffect(() => () => clearTimeout(hoverTimer.current), []);
+  const hover = (kind) => ({
+    onMouseEnter: () => {
+      clearTimeout(hoverTimer.current);
+      hoverTimer.current = setTimeout(() => onPanelHover(kind), PANEL_HOVER_DELAY_MS);
+    },
+    onMouseLeave: () => clearTimeout(hoverTimer.current),
+  });
+  const click = (toggle) => () => {
+    clearTimeout(hoverTimer.current);
+    toggle();
+  };
+
   return (
     <div id="footer" data-drag-region onMouseDown={onDragRegionMouseDown}>
       <button
         class={`footer-btn${presetsOpen ? " active" : ""}`}
-        title="プリセットを開く"
+        title="マウスを乗せると開く(クリックで開いたままにする)"
         aria-label="プリセット"
         aria-expanded={presetsOpen}
         aria-haspopup="dialog"
-        onClick={onPresetsToggle}
+        onClick={click(onPresetsToggle)}
+        {...hover("presets")}
       >
         <span aria-hidden="true">{"☰"}</span>
         <span class="footer-label">プリセット</span>
       </button>
       <button
         class={`footer-btn${favoritesOpen ? " active" : ""}`}
-        title="お気に入りを開く"
+        title="マウスを乗せると開く(クリックで開いたままにする)"
         aria-label="お気に入り"
         aria-expanded={favoritesOpen}
         aria-haspopup="dialog"
-        onClick={onFavoritesToggle}
+        onClick={click(onFavoritesToggle)}
+        {...hover("favorites")}
       >
         <Icon name="star" />
         <span class="footer-label">お気に入り</span>

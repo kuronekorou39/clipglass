@@ -14,7 +14,7 @@ const DIRECTIONS = {
 const TEXT_INPUT_TAGS = ["INPUT", "TEXTAREA", "SELECT"];
 
 /** 文字入力中は Ctrl+Shift+矢印 を単語選択に使うので、横取りしない。 */
-function isEditing(target) {
+export function isEditing(target) {
   return Boolean(target && (TEXT_INPUT_TAGS.includes(target.tagName) || target.isContentEditable));
 }
 
@@ -33,20 +33,5 @@ export function windowKeyAction(event) {
   return { dx: x * WINDOW_STEP, dy: y * WINDOW_STEP, dw: 0, dh: 0 };
 }
 
-/** 数字キーで選べる、一覧の先頭からの件数。 */
+/** 修飾キー+数字で選べる、一覧の先頭からの件数。 */
 export const QUICK_PICK_COUNT = 9;
-
-/**
- * 数字キー 1〜9(テンキーも)を、一覧の先頭からの位置(0〜8)に変える。対象外なら null。
- * 修飾キーとの組み合わせはほかの操作(Ctrl+0 の文字サイズなど)に残し、文字入力中も横取りしない。
- * 押し続けて届く繰り返しは対象外(同じ内容を何度も貼り付けないため)。
- */
-export function quickPickIndex(event) {
-  if (event.repeat) return null;
-  if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return null;
-  if (isEditing(event.target)) return null;
-  const match = /^(?:Digit|Numpad)([1-9])$/.exec(event.code ?? "");
-  if (!match) return null;
-  const index = Number(match[1]) - 1;
-  return index < QUICK_PICK_COUNT ? index : null;
-}

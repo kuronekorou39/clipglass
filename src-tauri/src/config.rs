@@ -10,6 +10,7 @@ use crate::limits::{
     ARCHIVE_DAYS_LIMIT, ARCHIVE_MAX_MB_LIMIT, ARCHIVE_MAX_MB_MIN, DEFAULT_ARCHIVE_DAYS,
     DEFAULT_ARCHIVE_MAX_MB, DEFAULT_HISTORY_MAX_ITEMS, HISTORY_MAX_ITEMS_LIMIT,
 };
+use crate::quickkeys;
 
 pub const FILE_NAME: &str = "config.yaml";
 const BROKEN_FILE_NAME: &str = "config.broken.yaml";
@@ -50,6 +51,8 @@ pub struct Config {
     pub history: HistoryConfig,
     /// ウィンドウの表示/非表示を切り替えるショートカット。空なら登録しない。
     pub hotkey: String,
+    /// 一覧の上から9件を貼り付ける組み合わせ(`quickkeys.rs`)。
+    pub quick_keys: String,
 }
 
 impl Default for HistoryConfig {
@@ -68,6 +71,7 @@ impl Default for Config {
         Self {
             history: HistoryConfig::default(),
             hotkey: DEFAULT_HOTKEY.to_string(),
+            quick_keys: quickkeys::DEFAULT_MODE.to_string(),
         }
     }
 }
@@ -93,6 +97,9 @@ pub fn parse(yaml: &str) -> Result<Config, String> {
     config.history.archive_days = clamp_archive_days(config.history.archive_days);
     config.history.archive_max_mb = clamp_archive_max_mb(config.history.archive_max_mb);
     config.hotkey = config.hotkey.trim().to_string();
+    if !quickkeys::is_mode(&config.quick_keys) {
+        config.quick_keys = quickkeys::DEFAULT_MODE.to_string();
+    }
     Ok(config)
 }
 
@@ -127,6 +134,18 @@ pub fn save(path: &Path, config: &Config) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_keys_default_to_ctrl_and_reject_unknown_values() {
+        assert_eq!(parse("").unwrap().quick_keys, "ctrl");
+        assert_eq!(parse("hotkey: Alt+Q\n").unwrap().quick_keys, "ctrl");
+        assert_eq!(
+            parse("quick_keys: ctrl+alt\n").unwrap().quick_keys,
+            "ctrl+alt"
+        );
+        assert_eq!(parse("quick_keys: \"off\"\n").unwrap().quick_keys, "off");
+        assert_eq!(parse("quick_keys: nope\n").unwrap().quick_keys, "ctrl");
+    }
 
     #[test]
     fn empty_or_partial_yaml_falls_back_to_defaults() {
@@ -194,6 +213,7 @@ mod tests {
                 archive_max_mb: 50,
             },
             hotkey: String::new(),
+            quick_keys: "off".to_string(),
         };
         save(&path, &config).unwrap();
         assert!(fs::read_to_string(&path).unwrap().starts_with('#'));

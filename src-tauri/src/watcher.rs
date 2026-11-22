@@ -55,6 +55,11 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 /// 最後に処理したシーケンス番号。通知が重なっても同じ内容を二度読まない。
 static LAST_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
+/// 監視を始めたあとの AppHandle。
+pub fn app() -> Option<&'static AppHandle> {
+    APP.get()
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -16,9 +16,20 @@ export function HotkeyRecorder({ hotkey, onChange, onSuspend }) {
   // 変える前のショートカット。この画面で変えたときだけ持つ
   const [previous, setPrevious] = useState(null);
   const boxRef = useRef(null);
+  // 記録を自分で終えたとき(戻す処理はそちらで済んでいる)
+  const stopped = useRef(false);
 
   useEffect(() => {
     if (recording) boxRef.current?.focus();
+  }, [recording]);
+
+  // 記録の途中で設定が閉じても、止めたショートカットを元に戻す
+  useEffect(() => {
+    if (!recording) return undefined;
+    return () => {
+      if (!stopped.current) onSuspend(false);
+      stopped.current = false;
+    };
   }, [recording]);
 
   const start = () => {
@@ -30,6 +41,7 @@ export function HotkeyRecorder({ hotkey, onChange, onSuspend }) {
 
   const stop = (next) => {
     if (!recording) return;
+    stopped.current = true;
     setRecording(false);
     setPending([]);
     if (next === undefined || next === hotkey) {

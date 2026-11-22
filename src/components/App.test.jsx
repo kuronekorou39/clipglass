@@ -154,14 +154,33 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("設定ボタンで設定パネルが開き、Esc で閉じる", async () => {
+  it("設定ボタンで、設定を本体の外の別ウィンドウに開く", async () => {
     await click($('button[aria-label="設定"]'));
-    expect(dialog("設定")).toBeTruthy();
-    await key({ key: "Escape" });
-    // 閉じる途中は操作を受け付けず、アニメーションのあとに消える
-    expect(dialog("設定").closest(".overlay").classList.contains("closing")).toBe(true);
-    await settle();
+    expect(invoke).toHaveBeenCalledWith("toggle_panel", { kind: "settings" });
     expect(dialog("設定")).toBeNull();
+  });
+
+  it("設定を開いているとき、本体のどこかを押すと閉じる。設定ボタンは開閉に任せる", async () => {
+    await fire("panel", "settings");
+    invoke.mockClear();
+    const press = (el) => act(async () => el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+    await press($('button[aria-label="設定"]'));
+    expect(invoke).not.toHaveBeenCalledWith("close_panel");
+    await press(root.querySelector(".item"));
+    expect(invoke).toHaveBeenCalledWith("close_panel");
+    invoke.mockClear();
+    await fire("panel", null);
+    await press(root.querySelector(".item"));
+    expect(invoke).not.toHaveBeenCalledWith("close_panel");
+  });
+
+  it("別ウィンドウで変えた設定に追い付き、Rust 側の設定も読み直す", async () => {
+    localStorage.setItem("clipglass-settings", JSON.stringify({ theme: "light", fontSize: 18 }));
+    await act(async () => window.dispatchEvent(new StorageEvent("storage")));
+    expect(document.documentElement.dataset.theme).toBe("light");
+    invoke.mockClear();
+    await fire("config-changed", null);
+    expect(invoke).toHaveBeenCalledWith("get_config");
   });
 
   it("行に「登録」「固定」のボタンはなく、右クリックのメニューで行う", async () => {
@@ -214,7 +233,7 @@ describe("App", () => {
     expect(dialog("プリセットに追加")).toBeNull();
     // そのあとも、ほかの操作が効く
     await click($('button[aria-label="設定"]'));
-    expect(dialog("設定")).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith("toggle_panel", { kind: "settings" });
   });
 
   it("フォルダーを作らなければ、選んだ場所にそのまま入れる", async () => {
@@ -229,32 +248,11 @@ describe("App", () => {
   it("2件目以降を選ぶとコピーして貼り付ける。設定で貼り付けを止められる", async () => {
     await click(root.querySelectorAll(".item")[1]);
     expect(invoke).toHaveBeenCalledWith("copy_item", { id: 2, plain: false, paste: true });
-    await click($('button[aria-label="設定"]'));
-    await click(tab("履歴"));
-    const toggle = [...root.querySelectorAll('[aria-label="設定"] [role="switch"]')].find((el) =>
-      el.textContent.includes("選んだら貼り付ける"),
-    );
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
-    await click(toggle);
-    expect(JSON.parse(localStorage.getItem("clipglass-settings")).pasteOnSelect).toBe(false);
-    await key({ key: "Escape" });
-    await settle();
+    // 設定は別ウィンドウで変わり、storage イベントで届く
+    localStorage.setItem("clipglass-settings", JSON.stringify({ pasteOnSelect: false }));
+    await act(async () => window.dispatchEvent(new StorageEvent("storage")));
     await click(root.querySelectorAll(".item")[1]);
     expect(invoke).toHaveBeenCalledWith("copy_item", { id: 2, plain: false, paste: false });
-  });
-
-  it("色合いは設定の「表示」で選び、<html> に付けて次回も使う", async () => {
-    expect(document.documentElement.dataset.theme).toBe("dark");
-    await click($('button[aria-label="設定"]'));
-    const swatches = [...root.querySelectorAll(".theme-swatch")];
-    expect(swatches.map((b) => b.textContent)).toEqual(["ダーク", "ライト", "XP 風", "クラシック", "ターミナル"]);
-    // 見本は、その色合いの色で描く
-    expect(swatches[2].dataset.theme).toBe("xp");
-    expect(swatches[0].getAttribute("aria-pressed")).toBe("true");
-    await click(swatches[2]);
-    expect(document.documentElement.dataset.theme).toBe("xp");
-    expect(swatches[2].getAttribute("aria-pressed")).toBe("true");
-    expect(JSON.parse(localStorage.getItem("clipglass-settings")).theme).toBe("xp");
   });
 
   it("大きさを変える見えるつまみは、左下と右下の両方にある", async () => {
@@ -315,37 +313,15 @@ describe("App", () => {
     expect($(".item.archived").textContent).toContain("もっと前の内容");
   });
 
-  it("設定の「情報」に、バージョンと使い方とリンクがある", async () => {
-    await click($('button[aria-label="設定"]'));
-    await click(tab("情報"));
-    const panel = dialog("設定");
-    expect(panel.textContent).toContain("バージョン 9.9.9");
-    expect(panel.querySelectorAll(".help-list dt").length).toBeGreaterThan(4);
-    expect(panel.textContent).toContain("Ctrl + F");
-    await click([...panel.querySelectorAll(".link-row button")].find((b) => b.textContent === "GitHub"));
-    expect(invoke).toHaveBeenCalledWith("open_link", { target: "repo" });
-  });
-
-  it("過去の履歴を残す日数と大きさは「履歴」で変える。保存しない設定では出さない", async () => {
-    await click($('button[aria-label="設定"]'));
-    await click(tab("履歴"));
-    const days = $('[aria-label="過去の履歴を残す日数"]');
-    expect(days.value).toBe("30");
-    expect(dialog("設定").textContent).toContain("いま 3.0 MB を保管中");
-    await type(days, "7");
-    await act(async () => days.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
-    await act(async () => days.dispatchEvent(new FocusEvent("blur")));
-    expect(invoke).toHaveBeenCalledWith("set_archive", { days: 7, maxMb: 200 });
-  });
-
   it("形式・時刻・文字数は「データ」にまとめて畳む。開いても再コピーしない", async () => {
     const row = root.querySelectorAll(".item")[1];
-    const data = row.querySelector("details.item-data");
-    expect(data.open).toBe(false);
-    expect(data.querySelector("summary").textContent).toBe("データ");
-    expect(data.textContent).toContain("7文字");
+    const toggle = row.querySelector(".item-data-toggle");
+    expect(toggle.textContent).toBe("データ");
+    expect(row.querySelector(".item-data-list")).toBeNull();
     invoke.mockClear();
-    await click(data.querySelector("summary"));
+    await click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(row.querySelector(".item-data-list").textContent).toContain("7文字");
     expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
   });
 
@@ -365,25 +341,6 @@ describe("App", () => {
     expect(titlebar.querySelector('[aria-label="隠す"]')).toBeTruthy();
     expect(order[pause + 1].getAttribute("role")).toBe("separator");
     expect(order[pause + 2].id).toBe("opacity-slider");
-    await click($('button[aria-label="設定"]'));
-    await click($('[aria-label="設定"] [aria-label="文字を大きく"]'));
-    expect(document.documentElement.style.getPropertyValue("--font-size")).toBe("16px");
-    const wrap = $('[aria-label="設定"] [role="switch"]');
-    expect(wrap.getAttribute("aria-checked")).toBe("true");
-    await click(wrap);
-    expect(wrap.getAttribute("aria-checked")).toBe("false");
-    expect(JSON.parse(localStorage.getItem("clipglass-settings")).wrap).toBe(false);
-  });
-
-  it("設定はタブで分かれ、隅への配置は 2 × 2 に並ぶ", async () => {
-    await click($('button[aria-label="設定"]'));
-    const tabs = [...root.querySelectorAll('[aria-label="設定"] [role="tab"]')];
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["表示", "履歴", "起動", "ウィンドウ", "情報"]);
-    await click(tabs[3]);
-    const corners = [...root.querySelectorAll(".corner-grid button")].map((b) => b.textContent);
-    expect(corners).toEqual(["左上", "右上", "左下", "右下"]);
-    await click(root.querySelectorAll(".corner-grid button")[3]);
-    expect(invoke).toHaveBeenCalledWith("snap_window", { corner: "bottom-right" });
   });
 
   it("絞り込みはふだん閉じていて、開閉できる。閉じると条件も解く", async () => {
@@ -399,59 +356,6 @@ describe("App", () => {
     await click($('button[aria-label="絞り込みを閉じる"]'));
     expect($("#search")).toBeNull();
     expect(root.querySelectorAll(".item").length).toBe(3);
-  });
-
-  it("ショートカットはキーを押して記録し、記録のあいだは今のショートカットを止める", async () => {
-    await click($('button[aria-label="設定"]'));
-    await click([...root.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "起動"));
-    const box = $('[aria-label="ショートカット"]');
-    expect(box.textContent).toBe("Ctrl + Shift + V");
-    expect(root.querySelector('[aria-label="設定"] input[type="text"]')).toBeNull();
-    await click(box);
-    expect(invoke).toHaveBeenCalledWith("suspend_hotkey", { suspended: true });
-    const press = async (init) =>
-      act(async () => box.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init })));
-    await press({ code: "AltLeft", key: "Alt", altKey: true });
-    expect(box.textContent).toBe("Alt + …");
-    // 修飾キーなしは記録しない
-    await press({ code: "KeyQ", key: "q" });
-    expect(root.textContent).toContain("一緒に押してください");
-    await press({ code: "KeyQ", key: "Q", altKey: true, shiftKey: true });
-    await act(async () => {});
-    expect(invoke).toHaveBeenCalledWith("set_hotkey", { hotkey: "Alt+Shift+Q" });
-  });
-
-  it("ほかで使われていそうな組み合わせには注意を出し、元に戻せる", async () => {
-    await click($('button[aria-label="設定"]'));
-    await click([...root.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "起動"));
-    // テストの設定は Ctrl+Shift+V なので、最初から注意が出る
-    expect($(".hotkey-warning").textContent).toContain("書式なしで貼り付け");
-    const box = $('[aria-label="ショートカット"]');
-    await click(box);
-    await act(async () =>
-      box.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "KeyQ", altKey: true, shiftKey: true })),
-    );
-    await act(async () => {});
-    const undo = [...root.querySelectorAll(".hotkey button")].find((b) => b.textContent === "元に戻す");
-    expect(undo.title).toBe("Ctrl + Shift + V に戻す");
-    await click(undo);
-    expect(invoke).toHaveBeenLastCalledWith("get_config");
-    expect(invoke).toHaveBeenCalledWith("set_hotkey", { hotkey: "Ctrl+Shift+V" });
-  });
-
-  it("ショートカットの記録は Esc で取りやめ、元のショートカットに戻す", async () => {
-    await click($('button[aria-label="設定"]'));
-    await click([...root.querySelectorAll('[role="tab"]')].find((tab) => tab.textContent === "起動"));
-    await click($('[aria-label="ショートカット"]'));
-    await act(async () =>
-      $('[aria-label="ショートカット"]').dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, code: "Escape", key: "Escape" }),
-      ),
-    );
-    expect(invoke).toHaveBeenCalledWith("suspend_hotkey", { suspended: false });
-    expect(invoke).not.toHaveBeenCalledWith("set_hotkey", expect.anything());
-    // Esc で設定パネルまで閉じない
-    expect(dialog("設定").closest(".overlay").classList.contains("closing")).toBe(false);
   });
 
   it("Ctrl+F で絞り込みを開く", async () => {
@@ -470,8 +374,6 @@ describe("App", () => {
     });
     expect(document.documentElement.style.getPropertyValue("--bg-alpha")).toBe("0.3");
     expect(invoke).not.toHaveBeenCalledWith("set_window_opacity", expect.anything());
-    await click($('button[aria-label="設定"]'));
-    expect(root.textContent).not.toContain("ウィンドウ全体");
   });
 
   it("プリセットとお気に入りは本体の横の別ウィンドウで開き、一覧には重ねない", async () => {
@@ -494,31 +396,32 @@ describe("App", () => {
     expect(invoke).toHaveBeenCalledWith("close_panel");
   });
 
-  it("一覧の先頭から9件の頭に数字が付き、数字キーで選ぶと貼り付ける", async () => {
+  it("一覧の先頭から9件の頭に数字が付き、Ctrl+数字で選ぶと貼り付ける", async () => {
     const keys = [...root.querySelectorAll(".item .item-key")].map((el) => el.textContent);
     expect(keys).toEqual(["1", "2", "3"]);
-    await key({ code: "Digit3", key: "3" });
+    expect($(".item-key kbd").title).toBe("Ctrl + 1 で貼り付け");
+    await fire("quick-pick", 2);
     expect(invoke).toHaveBeenCalledWith("copy_item", { id: 3, plain: false, paste: true });
-    // 先頭(今の中身)も選べる。テンキーでもよい
-    await key({ code: "Numpad1", key: "1" });
+    // 先頭(今の中身)も選べる
+    await fire("quick-pick", 0);
     expect(invoke).toHaveBeenCalledWith("copy_item", { id: 1, plain: false, paste: true });
   });
 
-  it("数字キーは、絞り込んだ一覧の並びで数え、文字の入力中や設定を開いているあいだは使わない", async () => {
+  it("数字だけのキーは、貼り付けに使わない", async () => {
+    invoke.mockClear();
+    await key({ code: "Digit2", key: "2" });
+    expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
+  });
+
+  it("数字は絞り込んだ一覧の並びで数え、設定を開いているあいだは使わない", async () => {
     await click($('button[aria-label="検索と絞り込み"]'));
     await type($("#search"), "もうひとつ");
     expect([...root.querySelectorAll(".item .item-key")].map((el) => el.textContent)).toEqual(["1"]);
-    // 検索欄では数字をそのまま打てる
-    await act(async () =>
-      $("#search").dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, code: "Digit1", key: "1" })),
-    );
-    expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
-    $("#search").blur();
-    await key({ code: "Digit1", key: "1" });
+    await fire("quick-pick", 0);
     expect(invoke).toHaveBeenCalledWith("copy_item", { id: 3, plain: false, paste: true });
     invoke.mockClear();
-    await click($('button[aria-label="設定"]'));
-    await key({ code: "Digit2", key: "2" });
+    await fire("panel", "settings");
+    await fire("quick-pick", 0);
     expect(invoke).not.toHaveBeenCalledWith("copy_item", expect.anything());
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { presetChanges } from "../presets.js";
 import { loadPresetView, savePresetView, setCollapsedMany, toggleCollapsed } from "../presetView.js";
 import { folderPaths } from "../search.js";
+import { useKeyboard } from "../keyboardFocus.js";
 import { PresetEditor } from "./PresetEditor.jsx";
 import { PresetTree } from "./PresetTree.jsx";
 import { Icon } from "./Icon.jsx";
@@ -23,6 +24,9 @@ export function PresetPopover({
   onRevealFile,
 }) {
   const [editing, setEditing] = useState(null);
+  // 検索欄はふだん隠す。開いたときだけキーボードを受け取る
+  const [searchOpen, setSearchOpen] = useState(false);
+  useKeyboard(searchOpen || editing !== null);
   // 閉じているフォルダーと、前回のスクロール位置を覚えておく
   const [collapsed, setCollapsed] = useState(() => loadPresetView(localStorage).collapsed);
   const searchRef = useRef(null);
@@ -30,7 +34,12 @@ export function PresetPopover({
 
   useEffect(() => {
     if (!editing) searchRef.current?.focus();
-  }, [editing]);
+  }, [editing, searchOpen]);
+
+  const toggleSearch = () => {
+    if (searchOpen) onQueryChange("");
+    setSearchOpen(!searchOpen);
+  };
 
   // 開いたら、前回見ていた位置まで戻す
   useEffect(() => {
@@ -110,15 +119,6 @@ export function PresetPopover({
 
   return (
     <div id="presets" class="popover" role="dialog" aria-label="プリセット">
-      <input
-        ref={searchRef}
-        class="popover-search"
-        type="search"
-        value={query}
-        placeholder="プリセットを検索"
-        aria-label="プリセットを検索"
-        onInput={(e) => onQueryChange(e.target.value)}
-      />
       <div class="popover-body" ref={bodyRef} onScroll={rememberScroll}>
         {error && <div class="status-row status-error">{error}</div>}
         <PresetTree
@@ -138,6 +138,17 @@ export function PresetPopover({
           <div class="empty-hint">一致するプリセットがありません</div>
         )}
       </div>
+      {searchOpen && (
+        <input
+          ref={searchRef}
+          class="popover-search"
+          type="search"
+          value={query}
+          placeholder="プリセットを検索"
+          aria-label="プリセットを検索"
+          onInput={(e) => onQueryChange(e.target.value)}
+        />
+      )}
       {editing ? (
         <PresetEditor
           key={editing.formKey ?? editing.node?.path.join("/") ?? (editing.isFolder ? "new-folder" : "new")}
@@ -150,6 +161,15 @@ export function PresetPopover({
         />
       ) : (
         <div class="presets-footer">
+          <button
+            class="icon-btn"
+            title={searchOpen ? "検索を閉じる" : "検索"}
+            aria-label="検索"
+            aria-pressed={searchOpen}
+            onClick={toggleSearch}
+          >
+            <Icon name="search" size={13} />
+          </button>
           <button
             class="text-btn with-icon"
             disabled={Boolean(error)}
