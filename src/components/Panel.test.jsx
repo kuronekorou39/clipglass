@@ -222,6 +222,84 @@ describe("Panel", () => {
     expect(invoke).toHaveBeenCalledWith("remove_preset", { path: ["挨拶"] });
   });
 
+  it("ウィンドウに戻るたびにプリセットを読み直す。ほかの中身のときは読まない", async () => {
+    await show("presets");
+    const reads = () => invoke.mock.calls.filter(([command]) => command === "get_presets").length;
+    const before = reads();
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(reads()).toBe(before + 1);
+    await show("favorites");
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(reads()).toBe(before + 1);
+  });
+
+  it("プリセットを読めなければ理由を出し、読めるようになったら消える", async () => {
+    invoke.mockImplementation(async (command) => {
+      if (command === "get_presets") throw "presets.yaml が壊れています";
+      return null;
+    });
+    await show("presets");
+    expect($(".status-error").textContent).toBe("presets.yaml が壊れています");
+    invoke.mockImplementation(async (command) => (command === "get_presets" ? PRESETS : null));
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => {});
+    expect($(".status-error")).toBeNull();
+    expect(root.textContent).toContain("朝");
+  });
+
+  it("お気に入りを読めなければ通知を出す", async () => {
+    invoke.mockImplementation(async (command) => {
+      if (command === "get_favorites") throw "読めません";
+      return null;
+    });
+    await show("favorites");
+    expect($(".toast").textContent).toBe("読めません");
+    expect($(".toast").classList.contains("toast-error")).toBe(true);
+  });
+
+  it("お気に入りの追加に失敗したら、打った文字を残して読み直さない", async () => {
+    await show("favorites");
+    invoke.mockImplementation(async (command) => {
+      if (command === "add_favorite") throw "追加できません";
+      return FAVORITES;
+    });
+    invoke.mockClear();
+    const form = dialog("お気に入り").querySelector("form");
+    await type(form.querySelector("input"), "残す文字");
+    await act(async () => form.requestSubmit());
+    await act(async () => {});
+    expect($(".toast").textContent).toBe("追加できません");
+    expect(form.querySelector("input").value).toBe("残す文字");
+    expect(invoke).not.toHaveBeenCalledWith("get_favorites");
+  });
+
+  it("プリセットを作ると成功の通知を出し、通知は時間がたつと消える", async () => {
+    await show("presets");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await click(presetsFooterButton("フォルダー"));
+      const form = $('form[aria-label="フォルダーを作成"]');
+      await type(form.querySelector('[aria-label="名前"]'), "仕事");
+      await act(async () => form.requestSubmit());
+      await act(async () => {});
+      expect($(".toast").textContent).toBe("作成しました");
+      expect($(".toast").classList.contains("toast-error")).toBe(false);
+      await act(async () => vi.advanceTimersByTime(2500));
+      expect($(".toast")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("画面を閉じたら、キーと設定の変更の受け取りをやめる", async () => {
+    render(null, root);
+    await act(async () => {});
+    invoke.mockClear();
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
+    expect(invoke).not.toHaveBeenCalled();
+    expect(listeners.has("panel")).toBe(false);
+  });
+
   it("プリセットのファイルの場所をエクスプローラーで表示できる", async () => {
     await show("presets");
     const buttons = [...root.querySelectorAll(".presets-footer button")];

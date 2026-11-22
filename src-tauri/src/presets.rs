@@ -790,4 +790,63 @@ mod tests {
         assert_eq!(names(&root), ["c", "b", "a"]);
         assert!(reorder(&mut root, &path(&["ない"]), 1).is_err());
     }
+
+    #[test]
+    fn number_and_bool_keys_become_names() {
+        let root = parse("1: a\ntrue: b\n").unwrap();
+        assert_eq!(find_text(&root, &path(&["1"])), Some("a"));
+        assert_eq!(find_text(&root, &path(&["true"])), Some("b"));
+    }
+
+    #[test]
+    fn non_text_keys_are_rejected_with_location() {
+        let error = parse("? [a]\n: b\n").unwrap_err();
+        assert!(error.contains("先頭"), "{error}");
+        let error = parse("f:\n  ? [a]\n  : b\n").unwrap_err();
+        assert!(error.contains("「f」"), "{error}");
+    }
+
+    #[test]
+    fn scalar_values_become_text_and_null_becomes_empty() {
+        let root = parse("n: 12\nb: false\ne:\n").unwrap();
+        assert_eq!(find_text(&root, &path(&["n"])), Some("12"));
+        assert_eq!(find_text(&root, &path(&["b"])), Some("false"));
+        assert_eq!(find_text(&root, &path(&["e"])), Some(""));
+    }
+
+    #[test]
+    fn lists_and_tags_are_rejected_with_location() {
+        let error = parse("f:\n  g:\n    - x\n").unwrap_err();
+        assert!(error.contains("「f / g」"), "{error}");
+        let error = parse("a: !tag x\n").unwrap_err();
+        assert!(error.contains("タグ"), "{error}");
+        assert!(error.contains("「a」"), "{error}");
+    }
+
+    #[test]
+    fn top_level_scalar_is_rejected() {
+        assert!(parse("ただの文字").is_err());
+        assert!(parse("- a\n- b\n").is_err());
+        assert!(parse("~").unwrap().is_empty());
+    }
+
+    #[test]
+    fn remove_with_empty_path_is_an_error() {
+        let mut root = parse("a: b\n").unwrap();
+        assert!(remove(&mut root, &[]).is_err());
+        assert_eq!(root.len(), 1);
+    }
+
+    #[test]
+    fn save_fails_when_parent_is_a_file() {
+        let dir =
+            std::env::temp_dir().join(format!("clipglass-presets-parent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("blocker");
+        fs::write(&blocker, b"x").unwrap();
+        let root = parse("a: b\n").unwrap();
+        assert!(save(&blocker.join(FILE_NAME), &root).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

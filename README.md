@@ -2,7 +2,6 @@
 
 # Clipglass
 
-[![CI](https://github.com/kuronekorou39/clipglass/actions/workflows/ci.yml/badge.svg)](https://github.com/kuronekorou39/clipglass/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Windows](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](SPEC.md)
 [![Tauri v2](https://img.shields.io/badge/Tauri-v2-FFC131?logo=tauri&logoColor=white)](https://v2.tauri.app/)
@@ -17,9 +16,11 @@
 
 [GitHub Releases](https://github.com/kuronekorou39/clipglass/releases) から最新の `Clipglass_x.y.z_x64-setup.exe` をダウンロードして実行してください。対応 OS は Windows 11 (x64) です。
 
+インストーラーにはコード署名をしていないため、初回は Windows SmartScreen の警告が出ることがあります。発行元を確認したうえで使う場合は「詳細情報」→「実行」で進めてください。
+
 ## 主な機能
 
-- クリップボードの履歴を、常に手前の半透明ウィンドウに一覧表示(件数は設定で変更。初期値 10 件)
+- クリップボードの履歴を、常に手前の半透明ウィンドウに一覧表示(件数は設定で変更。初期値 100 件)
 - テキスト・画像・ファイルのコピーに対応。行をクリックすると再コピーし、同じ内容は重複せず先頭へ移動
 - 書式付きのコピー(HTML / RTF)にはバッジを表示。書式ごと、または文字だけを選んで再コピー
 - 画像はプレビューし、元の寸法のまま PNG で保存
@@ -30,7 +31,7 @@
 - お気に入り: しばらく使う文字をフォルダーなしで並べる。同じ文字が履歴に出ると星が付く
 - 色合いを選べる(ダーク、ライト、XP 風、クラシック、ターミナル)
 - プリセット: よく使う文字を階層で登録し、下部のボタンから本体の横(一覧に重ならない別ウィンドウ)に開いてクリックでコピー。履歴からは右クリックで入れるフォルダーを選んで追加でき、名前・文字・フォルダー・並びはアプリの中で編集できる(中身は YAML ファイル)
-- 通知領域に常駐し、ショートカット(初期値 Alt+Shift+Q。設定でキーを押して変更)でウィンドウを出し入れ。Windows へのサインイン時の自動起動
+- 通知領域に常駐し、ショートカット(初期値 Alt+Shift+Q。設定でキーを押して変更)でマウスのそばにウィンドウを出し、もう一度押すと隠す。Windows へのサインイン時の自動起動
 - 不透明度と文字サイズの調整(初期設定では背景だけを透かし、文字はくっきり残す)、読み取りの一時停止
 - リモートデスクトップでも扱いやすい移動とサイズ変更(幅は 200px まで細くできる。広めの縁、左下と右下のつまみ、Ctrl+Shift+矢印での移動、Ctrl+Shift+Alt+矢印でのサイズ変更、画面の四隅への配置)
 - 履歴と過去の履歴は、設定「次回の起動でも残す」が有効なとき(初期値)だけディスクに保存し、外部には送らない。無効にするとディスクから消す

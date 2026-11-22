@@ -239,6 +239,12 @@ impl History {
         self.current_id = None;
     }
 
+    /// クリップボードの中身が分からなくなったので、どの行も先頭行の扱いにしない。
+    pub fn forget_current(&mut self) {
+        self.current_id = None;
+        self.status = None;
+    }
+
     pub fn get(&self, id: u64) -> Option<&Item> {
         self.items.iter().find(|item| item.id == id)
     }
@@ -645,5 +651,60 @@ mod tests {
             item.text.as_ref().unwrap().chars().count(),
             TEXT_PREVIEW_CHARS
         );
+    }
+
+    fn image(hash: u64) -> Content {
+        Content::Image(StoredImage {
+            png: std::sync::Arc::new(vec![1]),
+            thumbnail: std::sync::Arc::new(vec![2]),
+            width: 1,
+            height: 1,
+            hash,
+        })
+    }
+
+    #[test]
+    fn restore_returns_existing_id_for_same_image_and_files() {
+        let mut history = History::default();
+        let image_id = history.insert(image(7), Vec::new(), 1);
+        let files = || Content::Files(vec!["a.txt".to_string()]);
+        let files_id = history.insert(files(), Vec::new(), 2);
+
+        assert_eq!(history.restore(image(7), Vec::new(), 3), image_id);
+        assert_eq!(history.restore(files(), Vec::new(), 3), files_id);
+        assert_eq!(history.items().len(), 2);
+    }
+
+    #[test]
+    fn restore_of_new_content_goes_first_without_becoming_current() {
+        let mut history = History::default();
+        let current = history.insert(image(1), Vec::new(), 1);
+        let restored = history.restore(image(2), Vec::new(), 5);
+        assert_eq!(history.items()[0].id, restored);
+        assert_eq!(history.items()[0].updated_at, 5);
+        assert_eq!(history.view(false).current_id, Some(current));
+    }
+
+    #[test]
+    fn forget_current_clears_current_and_status() {
+        let mut history = History::default();
+        add_text(&mut history, "a", 1);
+        assert!(history.view(false).current_id.is_some());
+        history.forget_current();
+        assert_eq!(history.view(false).current_id, None);
+
+        history.set_status(Status::Empty);
+        history.forget_current();
+        assert!(history.view(false).status.is_none());
+        // 項目そのものは残る
+        assert_eq!(history.items().len(), 1);
+    }
+
+    #[test]
+    fn get_finds_by_id_only() {
+        let mut history = History::default();
+        let id = history.insert(image(1), Vec::new(), 1);
+        assert_eq!(history.get(id).map(|item| item.id), Some(id));
+        assert!(history.get(id + 1).is_none());
     }
 }

@@ -27,6 +27,22 @@ describe("presetView", () => {
     expect(loadPresetView(fakeStorage("{壊れ")).scroll).toBe(0);
   });
 
+  it("形の違う記憶は、読める部分だけ使う", () => {
+    const view = loadPresetView(fakeStorage(JSON.stringify({ collapsed: "壊れ", scroll: "abc" })));
+    expect(view.collapsed.size).toBe(0);
+    expect(view.scroll).toBe(0);
+  });
+
+  it("保存できなくても例外を外へ出さない", () => {
+    const full = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("容量オーバー");
+      },
+    };
+    expect(() => savePresetView(full, { collapsed: new Set(["a"]), scroll: 1 })).not.toThrow();
+  });
+
   it("toggleCollapsed は元の集合を変えずに足し引きする", () => {
     const base = new Set(["a"]);
     const closed = toggleCollapsed(base, "b", false);

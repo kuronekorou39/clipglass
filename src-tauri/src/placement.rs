@@ -15,7 +15,7 @@ impl Rect {
         (self.x + self.width / 2, self.y + self.height / 2)
     }
 
-    fn contains(&self, (x, y): (i64, i64)) -> bool {
+    pub fn contains(&self, (x, y): (i64, i64)) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
 }
@@ -121,6 +121,34 @@ pub fn beside(anchor: Rect, size: (i64, i64), area: Rect, gap: i64) -> Rect {
         },
         area,
         (0, 0),
+    )
+}
+
+/// カーソルのそばに置く位置。右下に `gap` だけ離して置き、入らない向きは反対側へ返す
+/// (画面の右下にある通知領域から出すときは左上に開く)。どちらにも入らなければ作業領域に収める。
+pub fn near_cursor(
+    size: (i64, i64),
+    cursor: (i64, i64),
+    area: Rect,
+    gap: i64,
+    min: (i64, i64),
+) -> Rect {
+    let axis = |pos: i64, len: i64, start: i64, area_len: i64| {
+        if pos + gap + len <= start + area_len {
+            pos + gap
+        } else {
+            pos - gap - len
+        }
+    };
+    clamp_into(
+        Rect {
+            x: axis(cursor.0, size.0, area.x, area.width),
+            y: axis(cursor.1, size.1, area.y, area.height),
+            width: size.0,
+            height: size.1,
+        },
+        area,
+        min,
     )
 }
 
@@ -254,6 +282,30 @@ mod tests {
         assert_eq!(
             beside(rect(0, 0, 1700, 480), (380, 480), SCREEN, 8),
             rect(1540, 0, 380, 480)
+        );
+    }
+
+    #[test]
+    fn window_opens_beside_the_cursor_on_its_monitor() {
+        // 空きがあれば右下
+        assert_eq!(
+            near_cursor((420, 480), (100, 100), SCREEN, 8, MIN),
+            rect(108, 108, 420, 480)
+        );
+        // 右下の隅(通知領域)では左上へ返す
+        assert_eq!(
+            near_cursor((420, 480), (1900, 1030), SCREEN, 8, MIN),
+            rect(1472, 542, 420, 480)
+        );
+        // 2枚目のモニターでは、その中に置く
+        assert_eq!(
+            near_cursor((420, 480), (2000, 100), RIGHT_SCREEN, 8, MIN),
+            rect(2008, 108, 420, 480)
+        );
+        // 上下どちらにも入らない高さは、画面に収める
+        assert_eq!(
+            near_cursor((420, 2000), (100, 500), SCREEN, 8, MIN),
+            rect(108, 0, 420, 1040)
         );
     }
 

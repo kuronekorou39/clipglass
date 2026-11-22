@@ -92,13 +92,11 @@ export function App() {
   // 保存済みの設定を適用してからウィンドウを表示する
   useEffect(() => {
     (async () => {
-      try {
-        // 以前の版の「ウィンドウ全体」の透過が残らないよう、ウィンドウは不透明に戻す
-        await invoke("set_window_opacity", { opacity: 1 });
-        await invoke("set_pinned", { pinned: settings.pinned });
-      } finally {
-        await invoke("show_window");
-      }
+      // どれかが失敗しても、ウィンドウの表示と設定の読み込みまでは必ず進める
+      // 以前の版の「ウィンドウ全体」の透過が残らないよう、ウィンドウは不透明に戻す
+      await call("set_window_opacity", { opacity: 1 });
+      await call("set_pinned", { pinned: settings.pinned });
+      await call("show_window");
       loadConfig().catch((error) => showToast(String(error), true));
     })();
   }, []);
@@ -193,8 +191,8 @@ export function App() {
 
   const handlePinToggle = useCallback(async () => {
     const pinned = !settings.pinned;
-    updateSettings({ pinned });
-    await invoke("set_pinned", { pinned });
+    // 切り替えられたときだけ、画面と保存する値を変える
+    if ((await call("set_pinned", { pinned })).ok) updateSettings({ pinned });
   }, [settings.pinned]);
 
 
@@ -286,7 +284,7 @@ export function App() {
     if (!item) return false;
     // 先頭は今のクリップボードの中身。「文字だけにする」で書式を外してあれば、そのまま文字だけで貼る
     const plain = item.id === currentId && item.storedRich.length > 0 && richFormatLabels(item.formats).length === 0;
-    invoke("copy_item", { id: item.id, plain, paste });
+    call("copy_item", { id: item.id, plain, paste });
     return true;
   };
 
@@ -328,7 +326,7 @@ export function App() {
             saving={saving}
             // 先頭行の「文字だけにする」は今の内容の入れ替えなので、貼り付けない
             onCopy={(plain) =>
-              invoke("copy_item", { id: item.id, plain, paste: paste && item.id !== currentId })
+              call("copy_item", { id: item.id, plain, paste: paste && item.id !== currentId })
             }
             onSave={() => handleSave(item.id)}
             onMenu={(position) => setMenu({ item, ...position })}
@@ -349,6 +347,7 @@ export function App() {
             onRestore={async (item) =>
               (await call("restore_archived", { key: item.key, paste })).ok
             }
+            onRemove={async (item) => (await call("remove_archived", { key: item.key })).ok}
           />
         )}
       </div>

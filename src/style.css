@@ -1526,6 +1526,20 @@ button {
   color: var(--text-secondary);
 }
 
+/* 行の高さを変えないよう小さくし、触っている行にだけ出す */
+.archive-remove {
+  width: 1.4em;
+  height: 1.4em;
+  padding: 0;
+  align-self: flex-start;
+  opacity: 0;
+}
+
+.item.archived:hover .archive-remove,
+.item.archived:focus-within .archive-remove {
+  opacity: 1;
+}
+
 .item-time {
   flex-shrink: 0;
   margin-left: auto;

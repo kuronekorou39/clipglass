@@ -85,7 +85,14 @@ export function PresetPopover({
       path = result.value;
     }
     if (change.moved && !(await call("move_preset", { path, folder: values.folder })).ok) {
-      // 名前の変更までは済んでいるので、一覧は読み直す
+      // 名前の変更までは済んでいるので、一覧を読み直し、再保存は新しいパスから始める。
+      // 入力中の内容(移す先など)を保つよう、編集画面は作り直さない
+      if (path !== node.path) {
+        setEditing({
+          formKey: editing.formKey ?? node.path.join("/"),
+          node: { ...node, path, name: path.at(-1), ...(node.children ? {} : { text: values.text }) },
+        });
+      }
       onReload();
       return;
     }
@@ -133,7 +140,7 @@ export function PresetPopover({
       </div>
       {editing ? (
         <PresetEditor
-          key={editing.node?.path.join("/") ?? (editing.isFolder ? "new-folder" : "new")}
+          key={editing.formKey ?? editing.node?.path.join("/") ?? (editing.isFolder ? "new-folder" : "new")}
           target={editing}
           folders={folderPaths(presets)}
           onSave={save}

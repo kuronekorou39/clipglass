@@ -10,6 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use chrono::{Days, Local, NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
@@ -153,11 +154,16 @@ fn dir_size(dir: &Path) -> u64 {
 
 pub struct Archive {
     dir: PathBuf,
+    /// 追記と書き直しが重なると新しい行が消えるので、書き換えは1つずつ行う。
+    writing: Mutex<()>,
 }
 
 impl Archive {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            writing: Mutex::new(()),
+        }
     }
 
     fn day_dir(&self, day: NaiveDate) -> PathBuf {
@@ -179,16 +185,19 @@ impl Archive {
 
     /// その日の記録を、書いた順で読む。読めない行は飛ばす。
     fn read_day(&self, day: NaiveDate) -> Vec<Entry> {
-        let Ok(text) = fs::read_to_string(self.day_dir(day).join(INDEX_FILE)) else {
+        // 文字として壊れた行があっても、ほかの行は読めるようにバイト列のまま分ける
+        let Ok(bytes) = fs::read(self.day_dir(day).join(INDEX_FILE)) else {
             return Vec::new();
         };
-        text.lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
+        bytes
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| serde_json::from_slice(line).ok())
             .collect()
     }
 
     /// 一覧から外れた項目を保管する。日は、その項目を最後に使った日にする。
     pub fn append(&self, items: &[Item], now_ms: u64) -> Result<(), String> {
+        let _writing = self.writing.lock().unwrap();
         let today = Local::now().date_naive();
         for item in items {
             let dir = self.day_dir(day_of(item.updated_at, today));
@@ -247,41 +256,59 @@ impl Archive {
 
     /// 保管から1件を取り出して消す。内容、形式名、最後に使った時刻を返す。
     pub fn take(&self, key: &str) -> Result<(Content, Vec<String>, u64), String> {
+        let _writing = self.writing.lock().unwrap();
+        let (day, mut entries, index) = self.locate(key)?;
+        let entry = entries.remove(index);
+        let (formats, updated_at) = (entry.record.formats.clone(), entry.record.updated_at);
+        // 読めなかったときは、記録を消さずに残す
+        let content = store::restore(entry.record, &self.day_dir(day))
+            .ok_or("保管してある項目を読めませんでした")?;
+        self.rewrite_day(day, &entries)?;
+        Ok((content, formats, updated_at))
+    }
+
+    /// 保管から1件を消す。中身が読めない項目でも消せる。
+    pub fn remove(&self, key: &str) -> Result<(), String> {
+        let _writing = self.writing.lock().unwrap();
+        let (day, mut entries, index) = self.locate(key)?;
+        entries.remove(index);
+        self.rewrite_day(day, &entries)
+    }
+
+    /// 記録を指す名前から、その日と、その日の記録と、記録の位置を求める。
+    fn locate(&self, key: &str) -> Result<(NaiveDate, Vec<Entry>, usize), String> {
         let missing = || "保管してある項目が見つかりません".to_string();
         let (day, number) = key.split_once(KEY_SEPARATOR).ok_or_else(missing)?;
         let day = parse_day(day).ok_or_else(missing)?;
         let number: u64 = number.parse().map_err(|_| missing())?;
-        let dir = self.day_dir(day);
-
-        let mut entries = self.read_day(day);
+        let entries = self.read_day(day);
         let index = entries
             .iter()
             .position(|entry| entry.key == number)
             .ok_or_else(missing)?;
-        let entry = entries.remove(index);
-        let (formats, updated_at) = (entry.record.formats.clone(), entry.record.updated_at);
-        // 読めなかったときは、記録を消さずに残す
-        let content =
-            store::restore(entry.record, &dir).ok_or("保管してある項目を読めませんでした")?;
+        Ok((day, entries, index))
+    }
 
+    /// その日の記録を書き直し、使われなくなった画像を消す。空になればフォルダーごと消す。
+    fn rewrite_day(&self, day: NaiveDate, entries: &[Entry]) -> Result<(), String> {
+        let dir = self.day_dir(day);
         if entries.is_empty() {
-            fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-        } else {
-            let mut lines = String::new();
-            let mut referenced = HashSet::new();
-            for entry in &entries {
-                lines.push_str(&serde_json::to_string(entry).map_err(|e| e.to_string())?);
-                lines.push('\n');
-                if let Some(image) = &entry.record.image {
-                    for thumb in [false, true] {
-                        referenced.insert(dir.join(store::image_file_name(image.hash, thumb)));
-                    }
+            return fs::remove_dir_all(&dir).map_err(|e| e.to_string());
+        }
+        let mut lines = String::new();
+        let mut referenced = HashSet::new();
+        for entry in entries {
+            lines.push_str(&serde_json::to_string(entry).map_err(|e| e.to_string())?);
+            lines.push('\n');
+            if let Some(image) = &entry.record.image {
+                for thumb in [false, true] {
+                    referenced.insert(dir.join(store::image_file_name(image.hash, thumb)));
                 }
             }
-            save::write_atomically(&dir.join(INDEX_FILE), lines.as_bytes())?;
-            store::remove_images_except(&dir, &referenced);
         }
-        Ok((content, formats, updated_at))
+        save::write_atomically(&dir.join(INDEX_FILE), lines.as_bytes())?;
+        store::remove_images_except(&dir, &referenced);
+        Ok(())
     }
 
     /// 保管してある画像のサムネイル。`hash` は16進。
@@ -294,6 +321,7 @@ impl Archive {
     /// `keep_days` 日より前の日を消し、全体が `max_bytes` を超えていれば古い日から消す。
     /// いちばん新しい日は、大きさの整理では消さない(保管した直後に消えないように)。
     pub fn prune(&self, keep_days: u64, max_bytes: u64, today: NaiveDate) {
+        let _writing = self.writing.lock().unwrap();
         let oldest_kept = today
             .checked_sub_days(Days::new(keep_days))
             .unwrap_or(NaiveDate::MIN);
@@ -326,6 +354,7 @@ impl Archive {
 
     /// 保管してあるものをすべて消す。
     pub fn clear(&self) -> Result<(), String> {
+        let _writing = self.writing.lock().unwrap();
         match fs::remove_dir_all(&self.dir) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -511,6 +540,31 @@ mod tests {
     }
 
     #[test]
+    fn remove_deletes_one_record_and_its_unused_image() {
+        let archive = temp_archive("remove");
+        let items = evicted(vec![
+            (image(0xabc), noon("2026-11-01")),
+            (text("keep"), noon("2026-11-01")),
+        ]);
+        archive.append(&items, 1).unwrap();
+        let page = archive.list("", &all_kinds(), 0, 10);
+        let key = |kind: &str| {
+            let item = page.items.iter().find(|item| item.kind == kind).unwrap();
+            item.key.clone()
+        };
+
+        archive.remove(&key("image")).unwrap();
+        assert_eq!(texts(&archive.list("", &all_kinds(), 0, 10)), ["keep"]);
+        assert_eq!(archive.thumbnail("2026-11-01", "abc"), None);
+        assert!(archive.remove(&key("image")).is_err());
+
+        // 最後の1件を消すと、その日のフォルダーも残さない
+        archive.remove(&key("text")).unwrap();
+        assert!(archive.days().is_empty());
+        fs::remove_dir_all(&archive.dir).unwrap();
+    }
+
+    #[test]
     fn bad_keys_are_rejected_without_touching_other_folders() {
         let archive = temp_archive("keys");
         archive
@@ -583,6 +637,55 @@ mod tests {
     }
 
     #[test]
+    fn a_line_with_broken_encoding_does_not_hide_the_rest_of_the_day() {
+        let archive = temp_archive("encoding");
+        archive
+            .append(&evicted(vec![(text("ok"), noon("2026-11-01"))]), 1)
+            .unwrap();
+        let index = archive.day_dir(date("2026-11-01")).join(INDEX_FILE);
+        let mut bytes = vec![0xff, 0xfe, b'\n'];
+        bytes.extend(fs::read(&index).unwrap());
+        fs::write(&index, bytes).unwrap();
+        assert_eq!(texts(&archive.list("", &all_kinds(), 0, 10)), ["ok"]);
+        fs::remove_dir_all(&archive.dir).unwrap();
+    }
+
+    #[test]
+    fn appends_during_removals_never_lose_a_line() {
+        let archive = Arc::new(temp_archive("concurrent"));
+        let day = noon("2026-11-01");
+        let seed: Vec<_> = (0..40).map(|i| (text(&format!("old{i}")), day)).collect();
+        archive.append(&evicted(seed), 1).unwrap();
+        let keys: Vec<String> = archive
+            .list("", &all_kinds(), 0, 100)
+            .items
+            .into_iter()
+            .map(|item| item.key)
+            .collect();
+
+        let remover = {
+            let archive = Arc::clone(&archive);
+            std::thread::spawn(move || {
+                for key in keys {
+                    archive.remove(&key).unwrap();
+                }
+            })
+        };
+        for i in 0..40 {
+            archive
+                .append(&evicted(vec![(text(&format!("new{i}")), day)]), 1)
+                .unwrap();
+        }
+        remover.join().unwrap();
+
+        // 消した40件以外(足した40件と、`evicted` が残す分はない)がすべて残る
+        let left = texts(&archive.list("", &all_kinds(), 0, 100));
+        assert_eq!(left.len(), 40);
+        assert!(left.iter().all(|item| item.starts_with("new")));
+        fs::remove_dir_all(&archive.dir).unwrap();
+    }
+
+    #[test]
     fn keys_are_unique_within_the_same_millisecond_and_clear_is_safe() {
         let archive = temp_archive("keys-unique");
         let day = noon("2026-11-01");
@@ -600,5 +703,31 @@ mod tests {
         archive.clear().unwrap();
         assert_eq!(archive.size(), 0);
         assert!(archive.list("", &all_kinds(), 0, 10).items.is_empty());
+    }
+
+    #[test]
+    fn day_folder_without_index_lists_nothing() {
+        let archive = temp_archive("no-index");
+        fs::create_dir_all(archive.dir.join("2026-01-05")).unwrap();
+        let kinds = ["text".to_string()];
+        assert!(archive.list("", &kinds, 0, 10).items.is_empty());
+        assert!(archive.remove("2026-01-05/1").is_err());
+        assert_eq!(archive.size(), 0);
+        fs::remove_dir_all(&archive.dir).unwrap();
+    }
+
+    #[test]
+    fn clear_reports_error_when_path_is_a_file() {
+        let archive = temp_archive("clear-file");
+        fs::write(&archive.dir, b"x").unwrap();
+        assert!(archive.clear().is_err());
+        assert!(archive.dir.is_file());
+        fs::remove_file(&archive.dir).unwrap();
+    }
+
+    #[test]
+    fn clear_without_folder_succeeds() {
+        let archive = temp_archive("clear-none");
+        assert!(archive.clear().is_ok());
     }
 }

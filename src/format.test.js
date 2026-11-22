@@ -59,6 +59,10 @@ describe("保管した項目の表示", () => {
     expect(formatDay("2026-10-31", today)).toBe("11日前 2026/10/31(土)");
   });
 
+  it("時計が戻って未来の日になったら、隔たりを添えず日付だけ出す", () => {
+    expect(formatDay("2026-11-12", new Date(2026, 10, 11))).toBe("2026/11/12(木)");
+  });
+
   it("大きさは KB か MB で出す", () => {
     expect(formatBytes(0)).toBe("0 KB");
     expect(formatBytes(1500)).toBe("2 KB");

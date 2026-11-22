@@ -1,7 +1,11 @@
 [package]
 name = "clipglass"
-version = "0.8.2"
+version = "0.8.4"
 description = "Clipglass - always-visible clipboard viewer"
+authors = ["rou39"]
+license = "MIT"
+repository = "https://github.com/kuronekorou39/clipglass"
+homepage = "https://rou39.com"
 edition = "2021"
 
 [lib]

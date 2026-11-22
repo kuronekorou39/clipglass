@@ -13,6 +13,13 @@ export default defineConfig({
     poolOptions: {
       forks: { execArgv: NODE_MAJOR >= 22 ? ["--no-experimental-webstorage"] : [] },
     },
+    coverage: {
+      provider: "v8",
+      reporter: ["text"],
+      include: ["src/**"],
+      // main.jsx は起動するだけで、中身は App と Panel のテストで通る
+      exclude: ["src/**/*.test.*", "src/main.jsx"],
+    },
   },
   server: {
     port: 1432,

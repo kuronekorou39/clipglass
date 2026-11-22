@@ -121,7 +121,7 @@ pub fn save(path: &Path, config: &Config) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let yaml = serde_yaml_ng::to_string(config).map_err(|e| e.to_string())?;
-    fs::write(path, format!("{FILE_HEADER}{yaml}")).map_err(|e| e.to_string())
+    crate::save::write_atomically(path, format!("{FILE_HEADER}{yaml}").as_bytes())
 }
 
 #[cfg(test)]
@@ -231,5 +231,72 @@ mod tests {
     fn missing_file_gives_defaults() {
         let path = std::env::temp_dir().join("clipglass-no-such-config.yaml");
         assert_eq!(load(&path).unwrap(), Config::default());
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("clipglass-config-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn load_reports_error_when_path_is_a_directory() {
+        let dir = temp_dir("load-dir");
+        assert!(load(&dir).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn load_reports_when_backup_cannot_be_written() {
+        let dir = temp_dir("no-backup");
+        let file = dir.join(FILE_NAME);
+        fs::write(&file, "history: [").unwrap();
+        // 写し先がフォルダーだとコピーできない
+        fs::create_dir(dir.join(BROKEN_FILE_NAME)).unwrap();
+        let error = load(&file).unwrap_err();
+        assert!(error.contains("写しを作れませんでした"), "{error}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "history: [");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_fails_when_parent_is_a_file() {
+        let dir = temp_dir("parent-file");
+        let blocker = dir.join("blocker");
+        fs::write(&blocker, b"x").unwrap();
+        assert!(save(&blocker.join(FILE_NAME), &Config::default()).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn archive_settings_boundaries() {
+        assert_eq!(
+            clamp_archive_days(ARCHIVE_DAYS_LIMIT + 1),
+            ARCHIVE_DAYS_LIMIT
+        );
+        assert_eq!(clamp_archive_days(0), 0);
+        assert_eq!(clamp_archive_max_mb(0), ARCHIVE_MAX_MB_MIN);
+        assert_eq!(
+            clamp_archive_max_mb(ARCHIVE_MAX_MB_LIMIT + 1),
+            ARCHIVE_MAX_MB_LIMIT
+        );
+        // 保存しない設定では、日数があっても保管しない
+        let history = HistoryConfig {
+            persist: false,
+            ..HistoryConfig::default()
+        };
+        assert!(!history.archives());
+        let history = HistoryConfig {
+            archive_days: 0,
+            ..HistoryConfig::default()
+        };
+        assert!(!history.archives());
+        let history = HistoryConfig {
+            archive_max_mb: u64::MAX,
+            ..HistoryConfig::default()
+        };
+        assert_eq!(history.archive_max_bytes(), u64::MAX);
     }
 }

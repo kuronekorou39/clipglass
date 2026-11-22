@@ -54,6 +54,8 @@ const PANEL_EVENT: &str = "panel";
 const PANEL_WIDTH: f64 = 380.0;
 const PANEL_MIN_HEIGHT: f64 = 360.0;
 const PANEL_GAP: f64 = 6.0;
+/// ショートカットで出すときの、カーソルとウィンドウの間隔(論理ピクセル)。
+const CURSOR_GAP: f64 = 8.0;
 /// 履歴の画像をUIへ渡すURLスキーム。`/full/<id>` と `/thumb/<id>` を返す。
 const IMAGE_SCHEME: &str = "clipimg";
 /// 履歴の保存やショートカットの登録など、状態行に出さない通知をUIへ送るイベント。
@@ -158,13 +160,13 @@ fn copy_item(state: State<AppState>, id: u64, plain: bool, paste: bool) -> Resul
 
 #[tauri::command]
 fn set_paused(app: AppHandle, state: State<AppState>, paused: bool) -> Result<(), String> {
-    state.paused.store(paused, Ordering::Relaxed);
     if paused {
+        state.paused.store(true, Ordering::Relaxed);
         watcher::emit_state(&app);
         Ok(())
     } else {
-        // 再開したら、その時点の内容を読み直す。
-        post_to_watcher(&state, watcher::WM_REFRESH, 0, 0)
+        // 停止中にコピーされた内容を読まないよう、監視スレッドが位置を進めてから再開する。
+        post_to_watcher(&state, watcher::WM_RESUME, 0, 0)
     }
 }
 
@@ -195,7 +197,7 @@ fn archive_evicted(app: &AppHandle) {
         return;
     };
     let config = state.config.lock().unwrap().history.clone();
-    if evicted.is_empty() || !config.archives() {
+    if evicted.is_empty() || !config.archives() || paths.store.writes_held() {
         return;
     }
     if let Err(message) = paths.archive.append(&evicted, now_ms()) {
@@ -247,14 +249,20 @@ fn apply_window_alpha(window: &WebviewWindow, state: &AppState) -> Result<(), St
     }
 }
 
+/// UIの不透明度(0〜1)を、下限を守って0〜255へ変換する。
+fn opacity_to_alpha(opacity: f64) -> u8 {
+    (opacity.clamp(limits::MIN_WINDOW_OPACITY, 1.0) * f64::from(u8::MAX)) as u8
+}
+
 #[tauri::command]
 fn set_window_opacity(
     window: WebviewWindow,
     state: State<AppState>,
     opacity: f64,
 ) -> Result<(), String> {
-    let alpha = (opacity.clamp(limits::MIN_WINDOW_OPACITY, 1.0) * f64::from(u8::MAX)) as u8;
-    state.window_alpha.store(alpha, Ordering::Relaxed);
+    state
+        .window_alpha
+        .store(opacity_to_alpha(opacity), Ordering::Relaxed);
     apply_window_alpha(&window, &state)
 }
 
@@ -412,6 +420,21 @@ fn hide_window(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
 }
 
+/// 本体の配置から、横の別ウィンドウの位置と大きさを求める。
+fn panel_rect(current: &Placement) -> Rect {
+    let physical = |value: f64| (value * current.scale).round() as i64;
+    let size = (
+        physical(PANEL_WIDTH),
+        current.rect.height.max(physical(PANEL_MIN_HEIGHT)),
+    );
+    placement::beside(
+        current.rect,
+        size,
+        current.current_area,
+        physical(PANEL_GAP),
+    )
+}
+
 /// 横の別ウィンドウを本体の横へ置き直す。高さは本体に合わせる(低すぎるときは最小の高さ)。
 fn place_panel(app: &AppHandle) -> Result<(), String> {
     let (Some(main), Some(panel)) = (
@@ -421,18 +444,7 @@ fn place_panel(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     };
     let current = placement(&main)?;
-    let physical = |value: f64| (value * current.scale).round() as i64;
-    let size = (
-        physical(PANEL_WIDTH),
-        current.rect.height.max(physical(PANEL_MIN_HEIGHT)),
-    );
-    let rect = placement::beside(
-        current.rect,
-        size,
-        current.current_area,
-        physical(PANEL_GAP),
-    );
-    apply_rect(&panel, rect)
+    apply_rect(&panel, panel_rect(&current))
 }
 
 /// 横の別ウィンドウ。初めて開くときに作り、閉じても破棄せず隠しておく。
@@ -511,22 +523,66 @@ fn show_main_window(app: &AppHandle) {
     let _ = apply_window_alpha(&window, &app.state::<AppState>());
 }
 
-/// ショートカットと通知領域のクリックで使う。前面にあれば隠し、そうでなければ前面に出す。
+/// カーソルのあるモニターの、カーソルのそばへ動かす。モニターごとの拡大率の違いは大きさに反映する。
+fn move_near_cursor(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
+    let error = |e: tauri::Error| e.to_string();
+    let cursor = app.cursor_position().map_err(error)?;
+    let cursor = (cursor.x.round() as i64, cursor.y.round() as i64);
+    let monitors = window.available_monitors().map_err(error)?;
+    // 通知領域から出すときはカーソルがタスクバーの上にあるので、作業領域ではなく画面全体で探す
+    let monitor = monitors
+        .iter()
+        .find(|monitor| {
+            let (position, size) = (monitor.position(), monitor.size());
+            Rect {
+                x: position.x.into(),
+                y: position.y.into(),
+                width: size.width.into(),
+                height: size.height.into(),
+            }
+            .contains(cursor)
+        })
+        .ok_or("カーソルのあるモニターが見つかりません")?;
+    let scale = monitor.scale_factor();
+    let ratio = scale / window.scale_factor().map_err(error)?;
+    let size = window.inner_size().map_err(error)?;
+    let config = window_config(app);
+    let logical_min = (
+        config.and_then(|c| c.min_width).unwrap_or_default(),
+        config.and_then(|c| c.min_height).unwrap_or_default(),
+    );
+    let next = placement::near_cursor(
+        (
+            (f64::from(size.width) * ratio).round() as i64,
+            (f64::from(size.height) * ratio).round() as i64,
+        ),
+        cursor,
+        physical_rect(monitor.work_area()),
+        (CURSOR_GAP * scale).round() as i64,
+        (
+            (logical_min.0 * scale).round() as i64,
+            (logical_min.1 * scale).round() as i64,
+        ),
+    );
+    // 拡大率の違うモニターへ移ると OS が大きさを変えるので、先に移してから大きさを合わせる
+    let position = tauri::PhysicalPosition::new(next.x as i32, next.y as i32);
+    window.set_position(position).map_err(error)?;
+    apply_rect(window, next)
+}
+
+/// ショートカットと通知領域のクリックで使う。出ていれば隠し、隠れていればカーソルのそばに出す。
+/// 通知領域のクリックではフォーカスが先に外れるので、フォーカスではなく表示の有無で決める。
 fn toggle_main_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
         return;
     };
-    // 横の別ウィンドウを操作中も、前面にあるとみなす
-    let panel_focused = app
-        .get_webview_window(PANEL_WINDOW)
-        .is_some_and(|panel| panel.is_focused().unwrap_or(false));
-    let in_front = window.is_visible().unwrap_or(false)
-        && !window.is_minimized().unwrap_or(false)
-        && (window.is_focused().unwrap_or(false) || panel_focused);
-    if in_front {
+    let shown = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
+    if shown {
         hide_panel(app);
         let _ = window.hide();
     } else {
+        // 位置を決められなくても、前回の場所に出せばよい
+        let _ = move_near_cursor(app, &window);
         show_main_window(app);
     }
 }
@@ -587,12 +643,15 @@ fn get_config(app: AppHandle, state: State<AppState>) -> ConfigView {
     }
 }
 
-/// 設定を書き換えて保存する。履歴のロックを持ったまま呼ばない。
+/// 設定を書き換えて保存する。保存できたときだけ反映する(失敗した「保存しない」への変更で
+/// 保存済みの履歴を消さないため)。履歴のロックを持ったまま呼ばない。
 fn update_config(state: &AppState, change: impl FnOnce(&mut Config)) -> Result<Config, String> {
     let mut config = state.config.lock().unwrap();
-    change(&mut config);
-    config::save(&state.paths().config_file, &config)?;
-    Ok(config.clone())
+    let mut next = config.clone();
+    change(&mut next);
+    config::save(&state.paths().config_file, &next)?;
+    *config = next.clone();
+    Ok(next)
 }
 
 #[tauri::command]
@@ -617,6 +676,9 @@ fn set_history_persist(
     let config = update_config(&state, |config| config.history.persist = persist)?;
     // 無効にしたときは、保存してある履歴と保管をディスクから消す。
     persist_history(&app);
+    if !persist {
+        state.paths().store.remove_backups()?;
+    }
     tidy_archive(&state.paths().archive, &config.history)
 }
 
@@ -664,6 +726,12 @@ fn restore_archived(
         id as usize,
         watcher::copy_flags(false, paste),
     )
+}
+
+/// 保管してある項目を、一覧へ戻さずに消す。
+#[tauri::command]
+fn remove_archived(state: State<AppState>, key: String) -> Result<(), String> {
+    state.paths().archive.remove(&key)
 }
 
 #[tauri::command]
@@ -917,13 +985,18 @@ fn open_data_dir(state: State<AppState>) -> Result<(), String> {
     tauri_plugin_opener::open_path(&state.paths().data_dir, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// UIが名前で指定したページのURL。一覧にない名前は開かせない。
+fn link_url(target: &str) -> Option<&'static str> {
+    LINKS
+        .iter()
+        .find(|(name, _)| *name == target)
+        .map(|(_, url)| *url)
+}
+
 /// 設定の「情報」にあるページを、既定のブラウザーで開く。
 #[tauri::command]
 fn open_link(target: String) -> Result<(), String> {
-    let (_, url) = LINKS
-        .iter()
-        .find(|(name, _)| *name == target)
-        .ok_or("開く先が不正です")?;
+    let url = link_url(&target).ok_or("開く先が不正です")?;
     tauri_plugin_opener::open_url(url, None::<&str>).map_err(|e| e.to_string())
 }
 
@@ -1003,10 +1076,9 @@ async fn save_image(
     })
 }
 
-fn image_response(app: &AppHandle, path: &str) -> Option<Vec<u8>> {
+fn image_response(state: &AppState, path: &str) -> Option<Vec<u8>> {
     let mut segments = path.trim_start_matches('/').split('/');
     let variant = segments.next()?;
-    let state = app.state::<AppState>();
     if variant == ARCHIVE_IMAGE_VARIANT {
         let (day, hash) = (segments.next()?, segments.next()?);
         return state.paths.get()?.archive.thumbnail(day, hash);
@@ -1072,8 +1144,10 @@ fn setup(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let config = match config::load(&paths.config_file) {
         Ok(config) => config,
         Err(message) => {
+            // 「保存しない」や保管の日数が分からないので、初期値のままディスクを書き換えない
+            paths.store.hold_writes();
             notices.push(format!(
-                "設定を読めなかったので初期値で起動しました: {message}"
+                "設定を読めなかったので初期値で起動しました。次の起動まで履歴は保存しません: {message}"
             ));
             Config::default()
         }
@@ -1098,14 +1172,23 @@ fn setup(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Err(message) => {
-                notices.push(format!("保存してあった履歴を読めませんでした: {message}"));
+                let held = if paths.store.writes_held() {
+                    "次の起動まで履歴は保存しません: "
+                } else {
+                    ""
+                };
+                notices.push(format!(
+                    "保存してあった履歴を読めませんでした。{held}{message}"
+                ));
             }
         }
         // 上限から外れた分は、最初の読み取りのあとで保管へ回る
         history.set_max_items(config.history.max_items);
     }
-    if let Err(message) = tidy_archive(&paths.archive, &config.history) {
-        notices.push(format!("古い履歴を整理できませんでした: {message}"));
+    if !paths.store.writes_held() {
+        if let Err(message) = tidy_archive(&paths.archive, &config.history) {
+            notices.push(format!("古い履歴を整理できませんでした: {message}"));
+        }
     }
     *state.favorites.lock().unwrap() = favorites;
     if let Err(message) = register_hotkey(app.handle(), &config.hotkey) {
@@ -1155,7 +1238,8 @@ pub fn run() {
             panel: Mutex::new(None),
         })
         .register_uri_scheme_protocol(IMAGE_SCHEME, |context, request| {
-            let (status, body) = match image_response(context.app_handle(), request.uri().path()) {
+            let state = context.app_handle().state::<AppState>();
+            let (status, body) = match image_response(&state, request.uri().path()) {
                 Some(bytes) => (StatusCode::OK, bytes),
                 None => (StatusCode::NOT_FOUND, Vec::new()),
             };
@@ -1188,6 +1272,7 @@ pub fn run() {
             set_archive,
             get_archive,
             restore_archived,
+            remove_archived,
             set_hotkey,
             suspend_hotkey,
             set_autostart,
@@ -1233,4 +1318,474 @@ pub fn run() {
         .setup(|app| setup(app))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::history::StoredImage;
+    use chrono::TimeZone;
+
+    const IMAGE_HASH: u64 = 0xabc;
+    /// 2023年11月。保管の期間を過ぎた日として使う。
+    const OLD_MS: u64 = 1_700_000_000_000;
+
+    /// テスト専用のフォルダー。終わったら消す。
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("clipglass-lib-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn bare_state() -> AppState {
+        AppState {
+            history: Mutex::new(History::default()),
+            watcher_hwnd: AtomicIsize::new(0),
+            saving: AtomicBool::new(false),
+            paused: AtomicBool::new(false),
+            window_alpha: AtomicU8::new(u8::MAX),
+            pending_text: Mutex::new(None),
+            favorites: Mutex::new(Vec::new()),
+            config: Mutex::new(Config::default()),
+            paths: OnceLock::new(),
+            startup_notices: Mutex::new(Vec::new()),
+            panel: Mutex::new(None),
+        }
+    }
+
+    fn state_in(dir: &TestDir) -> AppState {
+        let state = bare_state();
+        let history_dir = dir.0.join(HISTORY_DIR);
+        let paths = Paths {
+            data_dir: dir.0.clone(),
+            config_file: dir.0.join(config::FILE_NAME),
+            presets_file: dir.0.join(presets::FILE_NAME),
+            favorites_file: dir.0.join(favorites::FILE_NAME),
+            archive: Archive::new(history_dir.join(store::ARCHIVE_DIR)),
+            store: Store::new(history_dir),
+        };
+        assert!(state.paths.set(paths).is_ok());
+        state
+    }
+
+    fn text(value: &str) -> Content {
+        Content::Text {
+            text: value.to_string(),
+            rich: Vec::new(),
+        }
+    }
+
+    fn image() -> Content {
+        Content::Image(StoredImage {
+            png: Arc::new(vec![1, 2, 3]),
+            thumbnail: Arc::new(vec![4, 5]),
+            width: 2,
+            height: 1,
+            hash: IMAGE_HASH,
+        })
+    }
+
+    /// 指定の内容と時刻の項目を保管へ入れる。
+    fn archive_items(archive: &Archive, items: Vec<(Content, u64)>) {
+        let mut history = History::default();
+        history.set_max_items(1);
+        for (content, updated_at) in items {
+            history.insert(content, Vec::new(), updated_at);
+        }
+        // 最後の1件を押し出して、すべてを保管の対象にする
+        history.insert(text("押し出す"), Vec::new(), now_ms());
+        archive.append(&history.take_evicted(), now_ms()).unwrap();
+    }
+
+    fn all_kinds() -> Vec<String> {
+        ["text", "image", "files"].map(String::from).to_vec()
+    }
+
+    fn placement_at(rect: Rect, scale: f64) -> Placement {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: (1920.0 * scale) as i64,
+            height: (1080.0 * scale) as i64,
+        };
+        Placement {
+            rect,
+            current_area: area,
+            areas: vec![area],
+            min: (0, 0),
+            scale,
+        }
+    }
+
+    // --- 履歴の表示 ---
+
+    #[test]
+    fn state_view_marks_favorites_and_reports_paused() {
+        let state = bare_state();
+        {
+            let mut history = state.history.lock().unwrap();
+            history.insert(text("普通"), Vec::new(), 1);
+            history.insert(text("星"), Vec::new(), 2);
+        }
+        state.favorites.lock().unwrap().push("星".to_string());
+
+        let view = state_view(&state);
+        assert!(!view.paused);
+        assert!(view.items[0].favorite);
+        assert!(!view.items[1].favorite);
+
+        state.paused.store(true, Ordering::Relaxed);
+        let view = state_view(&state);
+        assert!(view.paused);
+        // 停止中は現在の項目を示さない
+        assert_eq!(view.current_id, None);
+    }
+
+    #[test]
+    fn now_ms_matches_system_clock() {
+        let before = chrono::Utc::now().timestamp_millis() as u64;
+        let now = now_ms();
+        let after = chrono::Utc::now().timestamp_millis() as u64;
+        assert!((before..=after).contains(&now));
+    }
+
+    // --- 画像のURL ---
+
+    #[test]
+    fn image_url_returns_full_and_thumbnail() {
+        let state = bare_state();
+        let id = state.history.lock().unwrap().insert(image(), Vec::new(), 1);
+        assert_eq!(
+            image_response(&state, &format!("/full/{id}")),
+            Some(vec![1, 2, 3])
+        );
+        assert_eq!(
+            image_response(&state, &format!("/thumb/{id}")),
+            Some(vec![4, 5])
+        );
+        // 先頭の区切りはなくてもよい
+        assert_eq!(
+            image_response(&state, &format!("thumb/{id}")),
+            Some(vec![4, 5])
+        );
+    }
+
+    #[test]
+    fn image_url_rejects_bad_paths() {
+        let state = bare_state();
+        let (image_id, text_id) = {
+            let mut history = state.history.lock().unwrap();
+            let image_id = history.insert(image(), Vec::new(), 1);
+            (image_id, history.insert(text("文字"), Vec::new(), 2))
+        };
+        let unknown = image_id.max(text_id) + 1;
+        for path in [
+            String::new(),
+            "/".to_string(),
+            "/full".to_string(),
+            "/full/".to_string(),
+            "/full/abc".to_string(),
+            "/full/-1".to_string(),
+            format!("/other/{image_id}"),
+            format!("/full/{text_id}"),
+            format!("/full/{unknown}"),
+        ] {
+            assert_eq!(image_response(&state, &path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn archive_image_url_needs_paths_and_valid_parts() {
+        // 起動処理の前は保管の場所が決まっていない
+        assert_eq!(
+            image_response(&bare_state(), "/archive/2026-01-05/abc"),
+            None
+        );
+
+        let dir = TestDir::new("archive-url");
+        let state = state_in(&dir);
+        archive_items(&state.paths().archive, vec![(image(), OLD_MS)]);
+        let day = chrono::Local
+            .timestamp_millis_opt(OLD_MS as i64)
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        assert_eq!(
+            image_response(&state, &format!("/archive/{day}/{IMAGE_HASH:016x}")),
+            Some(vec![4, 5])
+        );
+        for path in [
+            "/archive".to_string(),
+            format!("/archive/{day}"),
+            format!("/archive/{day}/zzz"),
+            format!("/archive/{day}/def"),
+            format!("/archive/../{IMAGE_HASH:016x}"),
+            format!("/archive/{day}/../{IMAGE_HASH:016x}"),
+        ] {
+            assert_eq!(image_response(&state, &path), None, "{path}");
+        }
+    }
+
+    // --- 入力の変換 ---
+
+    #[test]
+    fn opacity_is_clamped_to_visible_range() {
+        let minimum = (limits::MIN_WINDOW_OPACITY * 255.0) as u8;
+        assert_eq!(opacity_to_alpha(1.0), u8::MAX);
+        assert_eq!(opacity_to_alpha(5.0), u8::MAX);
+        assert_eq!(opacity_to_alpha(limits::MIN_WINDOW_OPACITY), minimum);
+        assert_eq!(opacity_to_alpha(0.0), minimum);
+        assert_eq!(opacity_to_alpha(-1.0), minimum);
+        assert_eq!(opacity_to_alpha(0.5), 127);
+    }
+
+    #[test]
+    fn only_listed_links_can_be_opened() {
+        for (name, url) in LINKS {
+            assert_eq!(link_url(name), Some(url));
+            assert!(url.starts_with("https://"), "{url}");
+        }
+        assert_eq!(link_url(""), None);
+        assert_eq!(link_url("REPO"), None);
+        assert_eq!(link_url("https://example.com"), None);
+    }
+
+    #[test]
+    fn blank_description_counts_as_none() {
+        assert_eq!(description(None), None);
+        assert_eq!(description(Some(String::new())), None);
+        assert_eq!(description(Some(" \t\n".to_string())), None);
+        assert_eq!(description(Some(" a ".to_string())).as_deref(), Some(" a "));
+    }
+
+    #[test]
+    fn physical_rect_keeps_negative_positions() {
+        let rect = physical_rect(&tauri::PhysicalRect {
+            position: tauri::PhysicalPosition::new(-1920, -40),
+            size: tauri::PhysicalSize::new(1920, 1080),
+        });
+        assert_eq!(
+            rect,
+            Rect {
+                x: -1920,
+                y: -40,
+                width: 1920,
+                height: 1080
+            }
+        );
+    }
+
+    // --- 横の別ウィンドウの配置 ---
+
+    #[test]
+    fn panel_goes_right_with_main_height() {
+        let main = Rect {
+            x: 100,
+            y: 50,
+            width: 400,
+            height: 600,
+        };
+        let rect = panel_rect(&placement_at(main, 1.0));
+        assert_eq!(
+            rect,
+            Rect {
+                x: 506,
+                y: 50,
+                width: 380,
+                height: 600
+            }
+        );
+    }
+
+    #[test]
+    fn panel_has_minimum_height() {
+        let main = Rect {
+            x: 100,
+            y: 50,
+            width: 400,
+            height: 200,
+        };
+        assert_eq!(panel_rect(&placement_at(main, 1.0)).height, 360);
+    }
+
+    #[test]
+    fn panel_sizes_scale_with_display() {
+        let main = Rect {
+            x: 100,
+            y: 50,
+            width: 400,
+            height: 800,
+        };
+        let rect = panel_rect(&placement_at(main, 2.0));
+        assert_eq!((rect.x, rect.width, rect.height), (512, 760, 800));
+    }
+
+    #[test]
+    fn panel_goes_left_when_right_side_is_full() {
+        let main = Rect {
+            x: 1500,
+            y: 50,
+            width: 400,
+            height: 600,
+        };
+        assert_eq!(panel_rect(&placement_at(main, 1.0)).x, 1114);
+    }
+
+    // --- 保管の整理 ---
+
+    #[test]
+    fn tidy_archive_clears_when_archiving_is_off() {
+        let dir = TestDir::new("tidy-off");
+        let state = state_in(&dir);
+        let archive = &state.paths().archive;
+        archive_items(archive, vec![(text("a"), now_ms())]);
+        assert!(archive.size() > 0);
+
+        let off = config::HistoryConfig {
+            archive_days: 0,
+            ..Default::default()
+        };
+        tidy_archive(archive, &off).unwrap();
+        assert_eq!(archive.size(), 0);
+    }
+
+    #[test]
+    fn tidy_archive_drops_only_days_past_the_limit() {
+        let dir = TestDir::new("tidy-on");
+        let state = state_in(&dir);
+        let archive = &state.paths().archive;
+        archive_items(
+            archive,
+            vec![(text("古い"), OLD_MS), (text("新しい"), now_ms())],
+        );
+        assert_eq!(archive.list("", &all_kinds(), 0, 10).items.len(), 2);
+
+        tidy_archive(archive, &config::HistoryConfig::default()).unwrap();
+        assert_eq!(archive.list("", &all_kinds(), 0, 10).items.len(), 1);
+        assert_eq!(archive.list("古い", &all_kinds(), 0, 10).items.len(), 0);
+    }
+
+    // --- 設定とプリセットの保存 ---
+
+    #[test]
+    fn update_config_keeps_the_old_value_when_saving_fails() {
+        let dir = TestDir::new("config-save-fails");
+        let state = state_in(&dir);
+        // 同じ名前のフォルダーがあると、置き換えられずに保存が失敗する
+        fs::create_dir_all(&state.paths().config_file).unwrap();
+        assert!(update_config(&state, |config| config.history.persist = false).is_err());
+        assert!(state.config.lock().unwrap().history.persist);
+    }
+
+    #[test]
+    fn update_config_saves_and_returns_new_value() {
+        let dir = TestDir::new("config-save");
+        let state = state_in(&dir);
+        let returned = update_config(&state, |config| config.hotkey = "Alt+X".to_string()).unwrap();
+        assert_eq!(returned.hotkey, "Alt+X");
+        assert_eq!(state.config.lock().unwrap().hotkey, "Alt+X");
+        let loaded = config::load(&state.paths().config_file).unwrap();
+        assert_eq!(loaded.hotkey, "Alt+X");
+    }
+
+    #[test]
+    fn edit_presets_saves_successful_change() {
+        let dir = TestDir::new("presets-ok");
+        let state = state_in(&dir);
+        let file = &state.paths().presets_file;
+        fs::write(file, "a: 1\n").unwrap();
+        let added = edit_presets(&state, |root| {
+            presets::add_unique(root, &[], "b", presets::Node::Text("2".to_string()))
+        })
+        .unwrap();
+        assert_eq!(added, ["b"]);
+        let root = presets::load(file).unwrap();
+        assert_eq!(presets::find_text(&root, &added), Some("2"));
+        assert_eq!(presets::find_text(&root, &["a".to_string()]), Some("1"));
+    }
+
+    #[test]
+    fn edit_presets_does_not_write_on_failed_change() {
+        let dir = TestDir::new("presets-fail");
+        let state = state_in(&dir);
+        let file = &state.paths().presets_file;
+        fs::write(file, "a: 1 # 手書きのコメント\n").unwrap();
+        let result: Result<(), String> = edit_presets(&state, |root| {
+            root.clear();
+            Err("失敗".to_string())
+        });
+        assert_eq!(result.unwrap_err(), "失敗");
+        assert_eq!(
+            fs::read_to_string(file).unwrap(),
+            "a: 1 # 手書きのコメント\n"
+        );
+    }
+
+    #[test]
+    fn edit_presets_never_rewrites_a_broken_file() {
+        let dir = TestDir::new("presets-broken");
+        let state = state_in(&dir);
+        let file = &state.paths().presets_file;
+        fs::write(file, "- 壊れた形\n").unwrap();
+        let mut called = false;
+        let result = edit_presets(&state, |_| {
+            called = true;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!called);
+        assert_eq!(fs::read_to_string(file).unwrap(), "- 壊れた形\n");
+    }
+
+    // --- そのほかの補助 ---
+
+    #[test]
+    fn item_text_returns_full_text_only_for_text_items() {
+        let state = bare_state();
+        let long = "長".repeat(limits::TEXT_PREVIEW_CHARS + 1);
+        let (text_id, image_id, files_id) = {
+            let mut history = state.history.lock().unwrap();
+            (
+                history.insert(text(&long), Vec::new(), 1),
+                history.insert(image(), Vec::new(), 2),
+                history.insert(Content::Files(vec!["a".to_string()]), Vec::new(), 3),
+            )
+        };
+        // 表示用に省略される長さでも全文を返す
+        assert_eq!(item_text(&state, text_id).unwrap(), long);
+        assert!(item_text(&state, image_id).is_err());
+        assert!(item_text(&state, files_id).is_err());
+        assert!(item_text(&state, files_id + 1).is_err());
+    }
+
+    #[test]
+    fn saving_guard_is_exclusive_and_released_on_drop() {
+        let flag = AtomicBool::new(false);
+        let guard = SavingGuard::acquire(&flag).unwrap();
+        assert!(flag.load(Ordering::Relaxed));
+        assert!(SavingGuard::acquire(&flag).is_none());
+        drop(guard);
+        assert!(!flag.load(Ordering::Relaxed));
+        assert!(SavingGuard::acquire(&flag).is_some());
+    }
+
+    #[test]
+    fn panel_kinds_and_links_have_unique_names() {
+        assert_ne!(PANEL_KINDS[0], PANEL_KINDS[1]);
+        for (i, (name, _)) in LINKS.iter().enumerate() {
+            assert!(!LINKS[..i].iter().any(|(other, _)| other == name));
+        }
+    }
 }

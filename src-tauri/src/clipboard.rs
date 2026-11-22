@@ -450,6 +450,7 @@ mod tests {
         );
     }
 
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     const PNG_ID: u32 = 49_999;
@@ -461,6 +462,11 @@ mod tests {
         names: HashMap<u32, String>,
         data: HashMap<u32, Option<Vec<u8>>>,
         files: Vec<String>,
+        /// 読み取りに失敗する形式。
+        fail: Vec<u32>,
+        files_fail: bool,
+        /// 読み取りで渡された形式と上限。
+        limits: RefCell<Vec<(u32, usize)>>,
     }
 
     impl Fake {
@@ -470,7 +476,14 @@ mod tests {
                 names: HashMap::new(),
                 data: HashMap::new(),
                 files: Vec::new(),
+                fail: Vec::new(),
+                files_fail: false,
+                limits: RefCell::new(Vec::new()),
             }
+        }
+        fn failing(mut self, id: u32) -> Self {
+            self.fail.push(id);
+            self
         }
         fn name(mut self, id: u32, name: &str) -> Self {
             self.names.insert(id, name.to_string());
@@ -504,10 +517,17 @@ mod tests {
                 0
             }
         }
-        fn read(&self, id: u32, _limit: usize) -> Result<Option<Vec<u8>>, String> {
+        fn read(&self, id: u32, limit: usize) -> Result<Option<Vec<u8>>, String> {
+            self.limits.borrow_mut().push((id, limit));
+            if self.fail.contains(&id) {
+                return Err("read failed".to_string());
+            }
             Ok(self.data.get(&id).cloned().unwrap_or(None))
         }
         fn file_names(&self) -> Result<Vec<String>, String> {
+            if self.files_fail {
+                return Err("files failed".to_string());
+            }
             Ok(self.files.clone())
         }
     }
@@ -676,5 +696,192 @@ mod tests {
             write_text(hwnd, &text, &rich).unwrap();
         }
         unsafe { DestroyWindow(hwnd).unwrap() };
+    }
+
+    // --- 文字の解釈と書式付きデータの判定 ---
+
+    #[test]
+    fn decode_stops_at_first_nul_and_drops_odd_byte() {
+        let mut bytes = utf16("ab");
+        bytes.extend(utf16("捨てる"));
+        assert_eq!(decode_text_bytes(&bytes), "ab");
+        // 終端がなくても読め、半端な1バイトは捨てる
+        assert_eq!(decode_text_bytes(&[0x61, 0x00, 0x62]), "a");
+        assert_eq!(decode_text_bytes(&[]), "");
+    }
+
+    #[test]
+    fn decode_replaces_lone_surrogate() {
+        assert_eq!(
+            decode_text_bytes(&[0x61, 0x00, 0x3D, 0xD8, 0x62, 0x00]),
+            "a\u{FFFD}b"
+        );
+    }
+
+    #[test]
+    fn encoded_text_decodes_back() {
+        let text = "改行\r\nと絵文字😀";
+        assert_eq!(decode_text_bytes(&utf16_with_terminator(text)), text);
+    }
+
+    #[test]
+    fn only_known_rich_formats_are_kept() {
+        assert!(is_rich_format("HTML Format"));
+        assert!(is_rich_format("Rich Text Format"));
+        assert!(!is_rich_format("html format"));
+        assert!(!is_rich_format("CF_UNICODETEXT"));
+        assert!(!is_rich_format(""));
+    }
+
+    #[test]
+    fn wants_rich_boundary_counts_utf16_bytes() {
+        let units = RICH_CAPTURE_MAX_TEXT_BYTES / UTF16_UNIT_BYTES;
+        assert!(wants_rich(""));
+        assert!(wants_rich(&"a".repeat(units)));
+        assert!(!wants_rich(&"a".repeat(units + 1)));
+        // サロゲートペアは2単位に数える
+        let pairs = "😀".repeat(units / 2);
+        assert!(wants_rich(&pairs));
+        assert!(!wants_rich(&format!("{pairs}😀")));
+    }
+
+    #[test]
+    fn every_predefined_format_uses_its_constant_name() {
+        for (id, name) in PREDEFINED_FORMATS {
+            assert_eq!(format_name(*id), *name);
+        }
+    }
+
+    #[test]
+    fn drop_files_with_no_paths_has_only_header_and_terminator() {
+        let bytes = build_drop_files(&[]);
+        assert_eq!(bytes.len(), 22);
+        assert_eq!(&bytes[20..], &[0, 0]);
+    }
+
+    // --- read_payload: 読み取りの失敗と優先順位 ---
+
+    #[test]
+    fn text_read_error_is_returned() {
+        let fake = Fake::new(&[CF_UNICODETEXT, CF_DIB])
+            .failing(CF_UNICODETEXT)
+            .bytes(CF_DIB, Some(&[1]));
+        assert_eq!(read_payload(&fake).err().unwrap(), "read failed");
+    }
+
+    #[test]
+    fn image_read_error_is_returned() {
+        let fake = Fake::new(&[PNG_ID]).failing(PNG_ID);
+        assert_eq!(read_payload(&fake).err().unwrap(), "read failed");
+    }
+
+    #[test]
+    fn file_names_error_is_returned() {
+        let mut fake = Fake::new(&[CF_HDROP]);
+        fake.files_fail = true;
+        assert_eq!(read_payload(&fake).err().unwrap(), "files failed");
+    }
+
+    #[test]
+    fn unreadable_or_oversized_rich_is_skipped_but_text_survives() {
+        const RTF_ID: u32 = 49_002;
+        const SECOND_HTML_ID: u32 = 49_003;
+        let fake = Fake::new(&[CF_UNICODETEXT, HTML_ID, RTF_ID, SECOND_HTML_ID])
+            .name(HTML_ID, "HTML Format")
+            .name(RTF_ID, "Rich Text Format")
+            .name(SECOND_HTML_ID, "HTML Format")
+            .bytes(CF_UNICODETEXT, Some(&utf16("本文")))
+            .failing(HTML_ID)
+            .bytes(RTF_ID, None)
+            .bytes(SECOND_HTML_ID, Some(b"<i>ok</i>"));
+        let (_, payload) = read_payload(&fake).unwrap();
+        let Payload::Text { text, rich } = payload else {
+            panic!("テキストにならなかった");
+        };
+        assert_eq!(text, "本文");
+        assert_eq!(rich.len(), 1);
+        assert_eq!(rich[0].data, b"<i>ok</i>");
+    }
+
+    #[test]
+    fn rich_formats_keep_clipboard_order() {
+        const RTF_ID: u32 = 49_002;
+        let fake = Fake::new(&[RTF_ID, CF_UNICODETEXT, HTML_ID])
+            .name(HTML_ID, "HTML Format")
+            .name(RTF_ID, "Rich Text Format")
+            .bytes(CF_UNICODETEXT, Some(&utf16("x")))
+            .bytes(HTML_ID, Some(b"h"))
+            .bytes(RTF_ID, Some(b"r"));
+        let (_, payload) = read_payload(&fake).unwrap();
+        let Payload::Text { rich, .. } = payload else {
+            panic!("テキストにならなかった");
+        };
+        let names: Vec<_> = rich.iter().map(|format| format.name.as_str()).collect();
+        assert_eq!(names, ["Rich Text Format", "HTML Format"]);
+    }
+
+    #[test]
+    fn empty_text_falls_through_to_image_then_files() {
+        let image = Fake::new(&[CF_UNICODETEXT, CF_DIB, CF_HDROP])
+            .bytes(CF_UNICODETEXT, Some(&utf16("")))
+            .bytes(CF_DIB, Some(&[7]))
+            .with_files(&["C:\\a.txt"]);
+        let (_, payload) = read_payload(&image).unwrap();
+        assert!(matches!(payload, Payload::Image(RawImage::Dib(b)) if b == [7]));
+
+        let files = Fake::new(&[CF_UNICODETEXT, CF_HDROP])
+            .bytes(CF_UNICODETEXT, Some(&utf16("")))
+            .with_files(&["C:\\a.txt"]);
+        let (_, payload) = read_payload(&files).unwrap();
+        assert!(matches!(payload, Payload::Files(f) if f == ["C:\\a.txt"]));
+    }
+
+    #[test]
+    fn image_is_preferred_over_files() {
+        // エクスプローラーの画像コピーなど、両方が置かれる場合は画像として読む
+        let fake = Fake::new(&[CF_HDROP, CF_DIB])
+            .bytes(CF_DIB, Some(&[3]))
+            .with_files(&["C:\\a.png"]);
+        let (_, payload) = read_payload(&fake).unwrap();
+        assert!(matches!(payload, Payload::Image(RawImage::Dib(_))));
+    }
+
+    #[test]
+    fn formats_are_reported_in_clipboard_order_for_every_payload() {
+        let fake = Fake::new(&[0x4242, CF_HDROP])
+            .name(0x4242, "Custom")
+            .name(CF_HDROP, "CF_HDROP")
+            .with_files(&["a"]);
+        let (formats, _) = read_payload(&fake).unwrap();
+        assert_eq!(formats, ["Custom", "CF_HDROP"]);
+    }
+
+    #[test]
+    fn each_kind_is_read_with_its_own_limit() {
+        let text = Fake::new(&[CF_UNICODETEXT, HTML_ID])
+            .name(HTML_ID, "HTML Format")
+            .bytes(CF_UNICODETEXT, Some(&utf16("x")))
+            .bytes(HTML_ID, Some(b"h"));
+        read_payload(&text).unwrap();
+        assert_eq!(
+            *text.limits.borrow(),
+            [(CF_UNICODETEXT, MAX_TEXT_BYTES), (HTML_ID, MAX_RICH_BYTES)]
+        );
+
+        let image = Fake::new(&[CF_DIB]).bytes(CF_DIB, Some(&[1]));
+        read_payload(&image).unwrap();
+        assert_eq!(*image.limits.borrow(), [(CF_DIB, MAX_IMAGE_BYTES)]);
+    }
+
+    #[test]
+    fn large_text_does_not_request_rich_data() {
+        // 大きいコピーでは、コピー元に書式の生成を要求しない
+        let big = "a".repeat(RICH_CAPTURE_MAX_TEXT_BYTES / UTF16_UNIT_BYTES + 1);
+        let fake = Fake::new(&[CF_UNICODETEXT, HTML_ID])
+            .name(HTML_ID, "HTML Format")
+            .bytes(CF_UNICODETEXT, Some(&utf16(&big)))
+            .bytes(HTML_ID, Some(b"h"));
+        read_payload(&fake).unwrap();
+        assert_eq!(*fake.limits.borrow(), [(CF_UNICODETEXT, MAX_TEXT_BYTES)]);
     }
 }

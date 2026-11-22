@@ -297,6 +297,15 @@ describe("App", () => {
     expect($(".item.archived")).toBeNull();
   });
 
+  it("過去の履歴の ✕ は、一覧に戻さずその1件だけを消す", async () => {
+    await click(archiveButton("過去の履歴を見る"));
+    await archiveLoaded();
+    await click($('.item.archived [aria-label="過去の履歴から削除"]'));
+    expect(invoke).toHaveBeenCalledWith("remove_archived", { key: "2026-11-09/2" });
+    expect(invoke).not.toHaveBeenCalledWith("restore_archived", expect.anything());
+    expect($(".item.archived")).toBeNull();
+  });
+
   it("検索語は過去の履歴にも掛かる", async () => {
     await click($('button[aria-label="検索と絞り込み"]'));
     await type($("#search"), "もっと前");

@@ -140,6 +140,9 @@ function HistoryTab({ config, settings, onApply, onOpenDataDir, onPasteChange })
       setArchiveMaxMb(config.archiveMaxMb);
       return;
     }
+    // 30.9 のように入れても、実際に使う値を欄に見せる
+    setArchiveDays(days);
+    setArchiveMaxMb(maxMb);
     if (days !== config.archiveDays || maxMb !== config.archiveMaxMb) {
       onApply("set_archive", { days, maxMb });
     }

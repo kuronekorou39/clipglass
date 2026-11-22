@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -142,11 +143,24 @@ pub(crate) fn remove_images_except(dir: &Path, keep: &HashSet<PathBuf>) {
 
 pub struct Store {
     dir: PathBuf,
+    /// 読めなかった履歴や設定を上書きしないよう、この起動のあいだ保存を止めているか。
+    writes_held: AtomicBool,
 }
 
 impl Store {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        Self {
+            dir,
+            writes_held: AtomicBool::new(false),
+        }
+    }
+
+    pub fn hold_writes(&self) {
+        self.writes_held.store(true, Ordering::Relaxed);
+    }
+
+    pub fn writes_held(&self) -> bool {
+        self.writes_held.load(Ordering::Relaxed)
     }
 
     fn index_path(&self) -> PathBuf {
@@ -168,12 +182,16 @@ impl Store {
         let bytes = match fs::read(self.index_path()) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => {
+                // 一時的に読めないだけかもしれないので、次の保存で上書きしない
+                self.hold_writes();
+                return Err(e.to_string());
+            }
         };
         let records: Vec<Record> = match serde_json::from_slice(&bytes) {
             Ok(records) => records,
             Err(e) => {
-                let backup = self.move_aside()?;
+                let backup = self.move_aside().inspect_err(|_| self.hold_writes())?;
                 return Err(format!(
                     "{e}(読めなかった履歴は {} に退避しました)",
                     backup.display()
@@ -195,9 +213,16 @@ impl Store {
     }
 
     /// 履歴を書く。`persist` が偽なら、保存してあるものを消す。
+    /// 保存を止めているあいだは、利用者が保存を切ったときの消去だけを行う。
     pub fn save(&self, history: &History, persist: bool) -> Result<(), String> {
+        if !persist {
+            return self.clear();
+        }
+        if self.writes_held() {
+            return Ok(());
+        }
         let items = history.items();
-        if !persist || items.is_empty() {
+        if items.is_empty() {
             return self.clear();
         }
         fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
@@ -239,6 +264,28 @@ impl Store {
         Ok(backup)
     }
 
+    /// 読めなかったときに退避したフォルダー(`history.broken-<日時>`)を消す。
+    /// 履歴が空になるたびに呼ぶ `clear` とは分け、保存を切ったときだけ使う。
+    pub fn remove_backups(&self) -> Result<(), String> {
+        let (Some(parent), Some(name)) = (
+            self.dir.parent(),
+            self.dir.file_name().and_then(|name| name.to_str()),
+        ) else {
+            return Ok(());
+        };
+        let prefix = format!("{name}{BROKEN_SUFFIX}");
+        let Ok(entries) = fs::read_dir(parent) else {
+            return Ok(());
+        };
+        for entry in entries.flatten() {
+            let is_backup = entry.file_name().to_string_lossy().starts_with(&prefix);
+            if is_backup && entry.path().is_dir() {
+                fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
+            }
+        }
+        Ok(())
+    }
+
     /// 保存してある履歴をすべて消す。
     pub fn clear(&self) -> Result<(), String> {
         match fs::remove_file(self.index_path()) {
@@ -266,6 +313,50 @@ mod tests {
             std::env::temp_dir().join(format!("clipglass-store-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         Store::new(dir)
+    }
+
+    #[test]
+    fn remove_backups_deletes_only_this_stores_broken_folders() {
+        let root = std::env::temp_dir().join(format!("clipglass-backups-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = Store::new(root.join("history"));
+        fs::create_dir_all(root.join("history")).unwrap();
+        fs::create_dir_all(root.join("history.broken-20260101-000000")).unwrap();
+        fs::create_dir_all(root.join("history.other")).unwrap();
+        fs::write(root.join("history.broken-file"), b"x").unwrap();
+
+        store.remove_backups().unwrap();
+
+        assert!(!root.join("history.broken-20260101-000000").exists());
+        assert!(root.join("history").is_dir());
+        assert!(root.join("history.other").is_dir());
+        assert!(root.join("history.broken-file").is_file());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn held_writes_keep_the_saved_index_until_saving_is_turned_off() {
+        let store = temp_store("held");
+        store.save(&sample_history(), true).unwrap();
+        let saved = fs::read(store.index_path()).unwrap();
+        store.hold_writes();
+        // 空の履歴でも、別の内容でも、保存してあるものを変えない
+        store.save(&History::default(), true).unwrap();
+        let mut other = History::default();
+        other.insert(
+            Content::Text {
+                text: "new".into(),
+                rich: Vec::new(),
+            },
+            Vec::new(),
+            1,
+        );
+        store.save(&other, true).unwrap();
+        assert_eq!(fs::read(store.index_path()).unwrap(), saved);
+        // 利用者が保存を切ったときは消す
+        store.save(&other, false).unwrap();
+        assert!(!store.index_path().exists());
+        fs::remove_dir_all(&store.dir).unwrap();
     }
 
     fn sample_history() -> History {
@@ -494,5 +585,48 @@ mod tests {
         store.load(&mut loaded).unwrap();
         assert_eq!(texts(&loaded), ["本文", "C:\\a.txt"]);
         fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn unreadable_index_holds_writes_and_keeps_it() {
+        let store = temp_store("index-dir");
+        // 一覧がフォルダーだと読めない(一時的に読めない場合と同じ経路)
+        fs::create_dir_all(store.index_path()).unwrap();
+        let mut history = History::default();
+        assert!(store.load(&mut history).is_err());
+        assert!(store.writes_held());
+        assert!(store.index_path().is_dir());
+        assert!(history.items().is_empty());
+        fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn clear_reports_error_when_index_cannot_be_removed() {
+        let store = temp_store("clear-dir");
+        fs::create_dir_all(store.index_path()).unwrap();
+        assert!(store.clear().is_err());
+        fs::remove_dir_all(&store.dir).unwrap();
+    }
+
+    #[test]
+    fn write_images_fails_when_folder_is_missing() {
+        let store = temp_store("no-folder");
+        let image = StoredImage {
+            png: std::sync::Arc::new(vec![1]),
+            thumbnail: std::sync::Arc::new(vec![2]),
+            width: 1,
+            height: 1,
+            hash: 1,
+        };
+        assert!(write_images(&store.dir, &image).is_err());
+        assert!(!store.dir.exists());
+    }
+
+    #[test]
+    fn remove_backups_ignores_paths_without_a_readable_parent() {
+        // 親のないパスでは何も消さない
+        assert!(Store::new(PathBuf::new()).remove_backups().is_ok());
+        let missing = temp_store("no-parent").dir.join("missing").join("history");
+        assert!(Store::new(missing).remove_backups().is_ok());
     }
 }

@@ -52,6 +52,14 @@ describe("quickPickIndex", () => {
     expect(quickPickIndex(digit("Digit2", { shiftKey: true }))).toBeNull();
   });
 
+  it("押し続けて届く繰り返しは対象外", () => {
+    expect(quickPickIndex(digit("Digit2", { repeat: true }))).toBeNull();
+  });
+
+  it("キーの位置の情報がないイベントは対象外", () => {
+    expect(quickPickIndex(key("1"))).toBeNull();
+  });
+
   it("文字の入力中は横取りしない", () => {
     expect(quickPickIndex(digit("Digit2", {}, document.createElement("input")))).toBeNull();
     expect(quickPickIndex(digit("Digit2", {}, document.createElement("textarea")))).toBeNull();

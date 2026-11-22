@@ -95,6 +95,17 @@ fn key(virtual_key: VIRTUAL_KEY, flags: KEYBD_EVENT_FLAGS) -> INPUT {
     }
 }
 
+/// Ctrl+V を押して離す入力の並び。
+fn ctrl_v_inputs() -> [INPUT; 4] {
+    let pressed = KEYBD_EVENT_FLAGS::default();
+    [
+        key(VK_CONTROL, pressed),
+        key(VK_V, pressed),
+        key(VK_V, KEYEVENTF_KEYUP),
+        key(VK_CONTROL, KEYEVENTF_KEYUP),
+    ]
+}
+
 /// 直前に使っていたウィンドウを前面に戻し、Ctrl+V を送る。ウィンドウがもうなければ何もしない
 /// (クリップボードには入っているので、手で貼り付けられる)。
 pub fn paste_into_last_window() {
@@ -112,14 +123,7 @@ pub fn paste_into_last_window() {
         if GetForegroundWindow() != hwnd {
             return;
         }
-        let pressed = KEYBD_EVENT_FLAGS::default();
-        let inputs = [
-            key(VK_CONTROL, pressed),
-            key(VK_V, pressed),
-            key(VK_V, KEYEVENTF_KEYUP),
-            key(VK_CONTROL, KEYEVENTF_KEYUP),
-        ];
-        SendInput(&inputs, size_of::<INPUT>() as i32);
+        SendInput(&ctrl_v_inputs(), size_of::<INPUT>() as i32);
     });
 }
 
@@ -133,5 +137,52 @@ mod tests {
         assert!(is_ignored_class("NotifyIconOverflowWindow"));
         assert!(!is_ignored_class("Notepad"));
         assert!(!is_ignored_class(""));
+    }
+
+    #[test]
+    fn every_ignored_class_is_rejected_exactly() {
+        for class in IGNORED_CLASSES {
+            assert!(is_ignored_class(class));
+            // 大文字小文字や一部だけの一致では除外しない
+            assert!(!is_ignored_class(&class.to_lowercase()));
+            assert!(!is_ignored_class(&class[1..]));
+        }
+    }
+
+    #[test]
+    fn key_builds_a_keyboard_input() {
+        let input = key(VK_V, KEYEVENTF_KEYUP);
+        assert_eq!(input.r#type, INPUT_KEYBOARD);
+        let keyboard = unsafe { input.Anonymous.ki };
+        assert_eq!(keyboard.wVk, VK_V);
+        assert_eq!(keyboard.dwFlags, KEYEVENTF_KEYUP);
+        assert_eq!(keyboard.wScan, 0);
+        assert_eq!(keyboard.time, 0);
+    }
+
+    #[test]
+    fn ctrl_v_presses_and_releases_in_nested_order() {
+        let pressed = KEYBD_EVENT_FLAGS::default();
+        let keys = ctrl_v_inputs().map(|input| {
+            let keyboard = unsafe { input.Anonymous.ki };
+            (keyboard.wVk, keyboard.dwFlags)
+        });
+        assert_eq!(
+            keys,
+            [
+                (VK_CONTROL, pressed),
+                (VK_V, pressed),
+                (VK_V, KEYEVENTF_KEYUP),
+                (VK_CONTROL, KEYEVENTF_KEYUP),
+            ]
+        );
+    }
+
+    #[test]
+    fn null_window_is_not_remembered() {
+        let before = LAST_FOREGROUND.load(Ordering::Relaxed);
+        // null は OS へ問い合わせる前に弾かれる
+        remember(HWND(std::ptr::null_mut()));
+        assert_eq!(LAST_FOREGROUND.load(Ordering::Relaxed), before);
     }
 }

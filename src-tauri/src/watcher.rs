@@ -28,8 +28,8 @@ use image::RgbaImage;
 /// 履歴の項目をクリップボードへ書き戻す要求。
 /// wParamに項目ID、lParamに `copy_flags` の値(書式を落とすか、貼り付けるか)を入れる。
 pub const WM_COPY_ITEM: u32 = WM_APP + 1;
-/// 現在のクリップボードを読み直す要求。読み取りの再開時に使う。
-pub const WM_REFRESH: u32 = WM_APP + 2;
+/// 読み取りを再開する要求。停止中にコピーされた内容は読まない。
+pub const WM_RESUME: u32 = WM_APP + 2;
 /// `AppState::pending_text` の文字をクリップボードへ置く要求。プリセットとお気に入りの
 /// コピーに使う。wParamが0以外なら、そのあと貼り付ける。
 pub const WM_COPY_TEXT: u32 = WM_APP + 3;
@@ -210,6 +210,18 @@ fn refresh(app: &AppHandle, hwnd: HWND) {
     crate::history_changed(app);
 }
 
+/// 読み取りを再開する。今のクリップボードは読まず、処理済みの位置だけを進めるので、停止中の
+/// コピーは記録されない。停止中に変わっていれば、先頭行はもうクリップボードと一致しない。
+/// 読み取りのタイマーと同じスレッドで動くので、位置を進める前に停止が解けることはない。
+fn resume(app: &AppHandle, sequence: u32) {
+    let state = app.state::<AppState>();
+    if LAST_SEQUENCE.swap(sequence, Ordering::Relaxed) != sequence {
+        state.history.lock().unwrap().forget_current();
+    }
+    state.paused.store(false, Ordering::Relaxed);
+    emit_state(app);
+}
+
 /// 履歴の項目を書き戻す。成功すれば変更通知が届き、通常の経路で先頭へ移動する。
 /// `plain` が真なら、保存してある書式付きデータを付けずに文字だけを置く。
 /// `paste_after` が真なら、書き戻したあと直前に使っていたウィンドウへ貼り付ける。
@@ -283,8 +295,8 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        WM_REFRESH => {
-            refresh(app, hwnd);
+        WM_RESUME => {
+            resume(app, GetClipboardSequenceNumber());
             LRESULT(0)
         }
         WM_COPY_ITEM => {
@@ -514,5 +526,140 @@ mod tests {
             history.lock().unwrap().view(false).status,
             Some(Status::Error { .. })
         ));
+    }
+
+    #[test]
+    fn copy_flags_values_are_distinct() {
+        let all = [
+            copy_flags(false, false),
+            copy_flags(true, false),
+            copy_flags(false, true),
+            copy_flags(true, true),
+        ];
+        for (i, flags) in all.iter().enumerate() {
+            assert!(!all[..i].contains(flags));
+        }
+    }
+
+    #[test]
+    fn now_ms_is_after_2020() {
+        const JAN_2020_MS: u64 = 1_577_836_800_000;
+        assert!(now_ms() > JAN_2020_MS);
+    }
+
+    #[test]
+    fn prepare_keeps_formats_for_status_text_files_and_image() {
+        let formats = || vec!["A".to_string(), "B".to_string()];
+        assert!(matches!(
+            prepare(formats(), Payload::Unsupported),
+            Prepared::Status(Status::Unsupported { formats }) if formats == ["A", "B"]
+        ));
+        assert!(matches!(
+            prepare(formats(), Payload::TooLarge),
+            Prepared::Status(Status::TooLarge { formats }) if formats == ["A", "B"]
+        ));
+        assert!(matches!(
+            prepare(formats(), Payload::Files(vec!["x".to_string()])),
+            Prepared::Files { paths, formats } if paths == ["x"] && formats == ["A", "B"]
+        ));
+        assert!(matches!(
+            prepare(
+                formats(),
+                Payload::Text { text: "t".to_string(), rich: vec![] }
+            ),
+            Prepared::Text { text, formats, .. } if text == "t" && formats == ["A", "B"]
+        ));
+        assert!(matches!(
+            prepare(formats(), dib_payload()),
+            Prepared::Image { formats, hash, .. }
+                if formats == ["A", "B"] && hash == imaging::hash_image(&sample())
+        ));
+    }
+
+    #[test]
+    fn encode_image_thumbnail_is_limited_for_large_images() {
+        let edge = crate::limits::THUMBNAIL_MAX_EDGE * 2;
+        let image = RgbaImage::from_pixel(edge, edge / 2, Rgba([1, 2, 3, 255]));
+        let stored = encode_image(RawImage::Dib(imaging::to_dib(&image)), &image, 1).unwrap();
+        assert_eq!((stored.width, stored.height), (edge, edge / 2));
+        let thumbnail = imaging::decode(&RawImage::Png(stored.thumbnail.to_vec())).unwrap();
+        assert_eq!(thumbnail.width(), crate::limits::THUMBNAIL_MAX_EDGE);
+    }
+
+    #[test]
+    fn apply_stores_png_source_bytes_unchanged() {
+        let png = imaging::encode_png(&sample()).unwrap();
+        let history = Mutex::new(History::default());
+        apply(
+            &history,
+            vec![],
+            Payload::Image(RawImage::Png(png.clone())),
+            1,
+        );
+        let history = history.lock().unwrap();
+        match &history.items()[0].content {
+            Content::Image(image) => assert_eq!(*image.png, png),
+            _ => panic!("画像になりませんでした"),
+        }
+    }
+
+    #[test]
+    fn apply_moves_same_files_to_top_without_adding() {
+        let history = Mutex::new(History::default());
+        let files = || Payload::Files(vec!["a.txt".to_string()]);
+        apply(&history, vec![], files(), 1);
+        apply(
+            &history,
+            vec![],
+            Payload::Text {
+                text: "b".to_string(),
+                rich: vec![],
+            },
+            2,
+        );
+        apply(&history, vec!["CF_HDROP".to_string()], files(), 3);
+        let view = history.lock().unwrap().view(false);
+        assert_eq!(view.items.len(), 2);
+        assert_eq!(view.items[0].kind, "files");
+        assert_eq!(view.items[0].updated_at, 3);
+        assert_eq!(view.items[0].formats, ["CF_HDROP"]);
+    }
+
+    #[test]
+    fn apply_keeps_items_when_image_is_too_large() {
+        let history = Mutex::new(History::default());
+        apply(
+            &history,
+            vec![],
+            Payload::Text {
+                text: "残る".to_string(),
+                rich: vec![],
+            },
+            1,
+        );
+        let mut dib = vec![0u8; 40];
+        dib[..4].copy_from_slice(&40u32.to_le_bytes());
+        dib[4..8].copy_from_slice(&8000i32.to_le_bytes());
+        dib[8..12].copy_from_slice(&8000i32.to_le_bytes());
+        apply(&history, vec![], Payload::Image(RawImage::Dib(dib)), 2);
+        let view = history.lock().unwrap().view(false);
+        assert_eq!(view.items.len(), 1);
+        assert!(matches!(view.status, Some(Status::TooLarge { .. })));
+        // 状態行が出ている間は、どの行も現在の項目にしない
+        assert_eq!(view.current_id, None);
+    }
+
+    #[test]
+    fn apply_different_images_become_separate_items() {
+        let history = Mutex::new(History::default());
+        apply(&history, vec![], dib_payload(), 1);
+        let other = RgbaImage::from_pixel(2, 3, Rgba([200, 20, 30, 255]));
+        apply(
+            &history,
+            vec![],
+            Payload::Image(RawImage::Dib(imaging::to_dib(&other))),
+            2,
+        );
+        assert_eq!(history.lock().unwrap().view(false).items.len(), 2);
     }
 }
